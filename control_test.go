@@ -177,3 +177,48 @@ func TestSession_ControlRequestOnClosedSessionFails(t *testing.T) {
 		t.Fatal("expected an error on a closed session")
 	}
 }
+
+func TestSession_ToolRequestCarriesTheCLIsReasoning(t *testing.T) {
+	// given
+	// ... an approver that inspects why it is being asked
+	f := newFake()
+	var seen ToolRequest
+	sess := newTestSession(t, f, Options{
+		PermissionMode: PermissionModeDefault,
+		ApproveTool: func(_ context.Context, req ToolRequest) Decision {
+			seen = req
+			return Allow()
+		},
+	})
+
+	// when
+	// ... the CLI asks about a tool call it has already flagged
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{
+			"type": "control_request", "request_id": "p1",
+			"request": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "Read", "tool_use_id": "t1",
+				"input":           map[string]any{"file_path": "/etc/passwd"},
+				"blocked_path":    "/etc/passwd",
+				"decision_reason": "Path outside allowed directories",
+				"agent_id":        "sub-agent-123",
+			},
+		})
+		f.awaitWrites(t, 1)
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... the approver can see what the CLI objected to, and which agent asked
+	if seen.BlockedPath != "/etc/passwd" {
+		t.Fatalf("blocked path = %q", seen.BlockedPath)
+	}
+	if seen.DecisionReason != "Path outside allowed directories" {
+		t.Fatalf("decision reason = %q", seen.DecisionReason)
+	}
+	if seen.AgentID != "sub-agent-123" {
+		t.Fatalf("agent id = %q", seen.AgentID)
+	}
+}

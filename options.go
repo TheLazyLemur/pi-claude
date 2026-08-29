@@ -54,6 +54,18 @@ type ToolRequest struct {
 
 	// Mine reports whether this is one of the tools you registered.
 	Mine bool
+
+	// AgentID names the subagent making the call, empty for the main agent.
+	AgentID string
+
+	// BlockedPath is the path the CLI objected to, when it objected to one.
+	BlockedPath string
+
+	// DecisionReason is why the CLI is asking rather than proceeding.
+	DecisionReason string
+
+	// Suggestions are permission grants the CLI proposes, in its own shape.
+	Suggestions []any
 }
 
 // Decision is the answer to a ToolRequest.
