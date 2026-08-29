@@ -103,6 +103,75 @@ Your tools are reported by the bare name you registered (`greet`, not
 `mcp__pi__greet`); `req.Mine` distinguishes them from built-ins, and
 `req.Qualified` has the wire name if you need it.
 
+## Hooks
+
+Hooks run at points in the CLI's own lifecycle, and can rewrite a tool's
+arguments, inject context, or block the call outright.
+
+```go
+sess, _ := pi.New(ctx, pi.Options{
+    Hooks: map[pi.HookEvent][]pi.HookMatcher{
+        pi.HookPreToolUse: {{
+            Matcher: "Bash",
+            Hooks: []pi.HookFunc{
+                func(_ context.Context, in pi.HookInput) (pi.HookOutput, error) {
+                    if strings.Contains(fmt.Sprint(in.ToolInput["command"]), "rm -rf") {
+                        return pi.HookDeny("no recursive deletes"), nil
+                    }
+                    return pi.HookContinue(), nil
+                },
+            },
+        }},
+    },
+})
+```
+
+The deny reason reaches the model as the tool result, so write it as an
+instruction — "use the existing helper instead" teaches it more than "denied".
+
+Events: `HookPreToolUse`, `HookPostToolUse`, `HookPostToolUseFailure`,
+`HookPermissionRequest`, `HookUserPromptSubmit`, `HookSessionStart`,
+`HookSessionEnd`, `HookStop`, `HookSubagentStart`, `HookSubagentStop`,
+`HookPreCompact`, `HookNotification`.
+
+## Structured output
+
+Constrain the final answer to a shape, and get it back typed:
+
+```go
+type verdict struct {
+    Answer     string `json:"answer" desc:"The capital city"`
+    Confidence int    `json:"confidence" desc:"0 to 100"`
+}
+
+turn, _ := pi.Run(ctx, "What is the capital of France?", pi.Options{
+    OutputSchema: pi.SchemaFor[verdict](),
+})
+
+var got verdict
+json.Unmarshal(turn.StructuredOutput, &got) // {Paris 100}
+```
+
+A turn that fails validation comes back with `Subtype ==
+"error_max_structured_output_retries"`.
+
+## Streaming
+
+```go
+pi.Options{IncludePartialMessages: true}
+```
+
+turns on `DeltaEvent`, which carries tokens as they arrive; `Thinking`
+distinguishes reasoning from answer text.
+
+## Subagents
+
+```go
+pi.Options{Agents: map[string]pi.Agent{
+    "reviewer": {Description: "Reviews code for bugs", Prompt: "You are a code reviewer."},
+}}
+```
+
 ## Events
 
 ```go
@@ -114,6 +183,11 @@ stop := sess.Subscribe(func(ev pi.Event) {
     case pi.ToolCallEvent:   // model wants to run a tool
     case pi.ToolResultEvent: // what the tool returned
     case pi.DeniedEvent:     // your approver refused one
+    case pi.DeltaEvent:      // streamed token (IncludePartialMessages)
+    case pi.StatusEvent:     // e.g. "compacting"
+    case pi.CompactEvent:    // conversation was compacted
+    case pi.RateLimitEvent:  // window utilisation and reset time
+    case pi.AuthEvent:       // authentication progress
     case pi.TurnEvent:       // turn finished, with accounting
     case pi.ErrorEvent:      // protocol or transport failure
     }
@@ -146,7 +220,11 @@ sess.Prompt(ctx, "Which of those is the largest?") // still has the first in con
 | `sess.Subscribe(fn) (stop func())` | watch events |
 | `sess.OfferedTools() []string` | what the CLI actually gave the model |
 | `sess.ID() string` | CLI session id |
-| `sess.Interrupt() / SetModel() / SetPermissionMode()` | mid-session control |
+| `sess.Interrupt() / SetModel() / SetPermissionMode() / SetMaxThinkingTokens()` | mid-session control |
+| `sess.MCPStatus(ctx)` | external MCP server state |
+| `sess.SetMCPServers(ctx, servers)` | replace external MCP servers |
+| `sess.RewindFiles(ctx, id, dryRun)` | undo file edits (see caveat) |
+| `pi.SchemaFor[T]()` | JSON Schema from a Go type |
 | `sess.Close() error` | stop the subprocess; safe to call twice |
 | `pi.DefineTool(name, desc, fn) Tool` | tool from a typed param struct |
 | `pi.Text(...) / pi.Errorf(...)` | tool results |
@@ -158,6 +236,7 @@ sess.Prompt(ctx, "Which of those is the largest?") // still has the first in con
 - `examples/tools-only` — every built-in off, one custom tool, verified end to end
 - `examples/approve` — confining file reads to a directory
 - `examples/streaming` — events across several turns
+- `examples/verify` — hooks, streaming, structured output and subagents, checked live
 
 `examples/tools-only` is the same demo written by hand against the raw protocol
 in **332 lines**. Here it is **85**, and 40 of those print the verdict.
@@ -171,8 +250,15 @@ in **332 lines**. Here it is **85**, and 40 of those print the verdict.
 Tested against Claude Code 2.1.251. The protocol is not versioned or officially
 published, so treat CLI upgrades as potentially breaking.
 
-Not yet covered: hooks, streaming partial messages, structured JSON-schema
-output, file checkpointing and rewind, subagent definitions.
+Verified against the live CLI: custom tools, tool-surface control, permissions,
+hooks (including deny reasons reaching the model), streaming deltas, structured
+output, subagents, and MCP status. Run `go run ./examples/verify` to re-check
+after a CLI upgrade — it exits non-zero on regression.
+
+One known limitation: `RewindFiles` plumbs through correctly but Claude Code
+2.1.251 answers `{"canRewind": false, "error": "File rewinding is not
+enabled."}` even with `EnableFileCheckpointing` set. The CLI exposes no flag for
+it, so check `canRewind` in the reply rather than assuming.
 
 Built on protocol notes from
 [claude-code-stdio-protocol](https://github.com/TheLazyLemur/claude-agent-sdk-go),

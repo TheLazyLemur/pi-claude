@@ -1,6 +1,9 @@
 package pi
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Event is something that happened during a turn. Handle the ones you care
 // about with a type switch:
@@ -59,6 +62,44 @@ type DeniedEvent struct {
 	Reason string
 }
 
+// DeltaEvent is a streamed fragment of the assistant's answer. Only emitted
+// when Options.IncludePartialMessages is set.
+type DeltaEvent struct {
+	Text     string
+	Thinking bool
+}
+
+// StatusEvent reports a session status change, such as "compacting".
+type StatusEvent struct{ Status string }
+
+// CompactEvent reports that the conversation was compacted.
+type CompactEvent struct {
+	Trigger      string
+	TokensBefore int
+}
+
+// AuthEvent reports authentication progress.
+type AuthEvent struct {
+	Authenticating bool
+	Output         []string
+	Error          string
+}
+
+// RateLimitEvent reports usage against the account's rate limit windows.
+type RateLimitEvent struct {
+	// Status is "allowed" or "rejected".
+	Status string
+
+	// Window is the limit that applies, e.g. "five_hour".
+	Window string
+
+	// ResetsAt is when the current window resets.
+	ResetsAt time.Time
+
+	// Utilization is the fraction used per window, keyed by window name.
+	Utilization map[string]float64
+}
+
 // TurnEvent closes a turn and carries its accounting.
 type TurnEvent struct{ Turn Turn }
 
@@ -72,6 +113,11 @@ func (ToolCallEvent) isEvent()     {}
 func (ToolResultEvent) isEvent()   {}
 func (ToolProgressEvent) isEvent() {}
 func (DeniedEvent) isEvent()       {}
+func (DeltaEvent) isEvent()        {}
+func (StatusEvent) isEvent()       {}
+func (CompactEvent) isEvent()      {}
+func (AuthEvent) isEvent()         {}
+func (RateLimitEvent) isEvent()    {}
 func (TurnEvent) isEvent()         {}
 func (ErrorEvent) isEvent()        {}
 
@@ -121,4 +167,8 @@ type Turn struct {
 
 	// Duration is wall-clock time for the turn.
 	Duration time.Duration
+
+	// StructuredOutput is the validated JSON answer when Options.OutputSchema
+	// was set. Decode it into your own type.
+	StructuredOutput json.RawMessage
 }

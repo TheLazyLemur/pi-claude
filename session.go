@@ -23,6 +23,8 @@ type Session struct {
 	transport proto.Transport
 	opts      Options
 	tools     *toolset
+	hooks     map[string]HookFunc
+	hookInit  map[string]any
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -36,6 +38,7 @@ type Session struct {
 	subs         map[int]func(Event)
 	nextSub      int
 	pending      *pendingTurn
+	awaiting     map[string]chan controlReply
 }
 
 // pendingTurn accumulates a turn until the CLI reports its result.
@@ -73,13 +76,18 @@ func Run(ctx context.Context, prompt string, opts Options) (Turn, error) {
 func newSession(ctx context.Context, transport proto.Transport, opts Options) *Session {
 	ctx, cancel := context.WithCancel(ctx)
 
+	hookInit, hookCallbacks := buildHooks(opts.Hooks)
+
 	s := &Session{
 		transport: transport,
 		opts:      opts,
 		tools:     newToolset(toolServerName, opts.CustomTools),
+		hooks:     hookCallbacks,
+		hookInit:  hookInit,
 		ctx:       ctx,
 		cancel:    cancel,
 		subs:      make(map[int]func(Event)),
+		awaiting:  make(map[string]chan controlReply),
 	}
 
 	go s.readLoop()
@@ -116,16 +124,62 @@ func buildArgs(opts Options) []string {
 	if opts.Continue {
 		args = append(args, "--continue")
 	}
+	if opts.ResumeSessionAt != "" {
+		args = append(args, "--resume-session-at", opts.ResumeSessionAt)
+	}
+	if opts.ForkSession {
+		args = append(args, "--fork-session")
+	}
+	if opts.NoSessionPersistence {
+		args = append(args, "--no-session-persistence")
+	}
+	if opts.IncludePartialMessages {
+		args = append(args, "--include-partial-messages")
+	}
+	if opts.FallbackModel != "" {
+		args = append(args, "--fallback-model", opts.FallbackModel)
+	}
+	if len(opts.AdditionalDirectories) > 0 {
+		args = append(args, "--add-dir")
+		args = append(args, opts.AdditionalDirectories...)
+	}
+	if len(opts.Betas) > 0 {
+		args = append(args, "--betas")
+		args = append(args, opts.Betas...)
+	}
+	if len(opts.SettingSources) > 0 {
+		args = append(args, "--setting-sources", strings.Join(opts.SettingSources, ","))
+	}
+	if len(opts.MCPConfig) > 0 {
+		args = append(args, "--mcp-config")
+		args = append(args, opts.MCPConfig...)
+	}
+	if len(opts.OutputSchema) > 0 {
+		if encoded, err := json.Marshal(opts.OutputSchema); err == nil {
+			args = append(args, "--json-schema", string(encoded))
+		}
+	}
+	if len(opts.Agents) > 0 {
+		if encoded, err := json.Marshal(opts.Agents); err == nil {
+			args = append(args, "--agents", string(encoded))
+		}
+	}
 
 	// NoTools wins over an allowlist: an allowlist is meaningless once the
 	// built-in set is dropped.
+	strictMCP := opts.StrictMCPConfig
 	switch {
 	case opts.NoTools == NoToolsAll:
-		args = append(args, "--tools", "", "--strict-mcp-config")
+		args = append(args, "--tools", "")
+		strictMCP = true
 	case opts.NoTools == NoToolsBuiltin:
 		args = append(args, "--tools", "")
 	case len(opts.Tools) > 0:
 		args = append(args, "--tools", strings.Join(opts.Tools, ","))
+	}
+
+	if strictMCP {
+		args = append(args, "--strict-mcp-config")
 	}
 
 	return args
@@ -197,6 +251,82 @@ func (s *Session) Subscribe(fn func(Event)) (cancel func()) {
 	}
 }
 
+// controlReply is the CLI's answer to a control request we sent.
+type controlReply struct {
+	body map[string]any
+	err  error
+}
+
+// request sends a control request and waits for the CLI's reply.
+func (s *Session) request(ctx context.Context, subtype string, fields map[string]any) (map[string]any, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, ErrSessionClosed
+	}
+	id := requestID()
+	reply := make(chan controlReply, 1)
+	s.awaiting[id] = reply
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.awaiting, id)
+		s.mu.Unlock()
+	}()
+
+	fields["subtype"] = subtype
+	if err := s.write(map[string]any{
+		"type":       "control_request",
+		"request_id": id,
+		"request":    fields,
+	}); err != nil {
+		return nil, err
+	}
+
+	select {
+	case r := <-reply:
+		return r.body, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.ctx.Done():
+		return nil, ErrSessionClosed
+	}
+}
+
+// MCPStatus reports the connection state of external MCP servers.
+func (s *Session) MCPStatus(ctx context.Context) (map[string]any, error) {
+	return s.request(ctx, "mcp_status", map[string]any{})
+}
+
+// SetMCPServers replaces the external MCP servers for this session.
+func (s *Session) SetMCPServers(ctx context.Context, servers map[string]any) (map[string]any, error) {
+	return s.request(ctx, "mcp_set_servers", map[string]any{"servers": servers})
+}
+
+// RewindFiles undoes file edits back to a message id from the CLI's transcript.
+// Pass dryRun to learn what would change without changing it.
+//
+// This needs file checkpointing enabled. Claude Code 2.1.251 answers
+// {"canRewind": false, "error": "File rewinding is not enabled."} even with
+// Options.EnableFileCheckpointing set, so treat the reply as authoritative and
+// check canRewind before relying on it.
+func (s *Session) RewindFiles(ctx context.Context, userMessageID string, dryRun bool) (map[string]any, error) {
+	return s.request(ctx, "rewind_files", map[string]any{
+		"user_message_id": userMessageID,
+		"dry_run":         dryRun,
+	})
+}
+
+// SetMaxThinkingTokens caps extended thinking. Zero or less clears the cap.
+func (s *Session) SetMaxThinkingTokens(tokens int) error {
+	var value any
+	if tokens > 0 {
+		value = tokens
+	}
+	return s.control("set_max_thinking_tokens", map[string]any{"max_thinking_tokens": value})
+}
+
 // Interrupt stops the current turn.
 func (s *Session) Interrupt() error {
 	return s.control("interrupt", map[string]any{})
@@ -248,6 +378,12 @@ func (s *Session) initRequest() map[string]any {
 	req := map[string]any{"subtype": "initialize"}
 	if !s.tools.empty() {
 		req["sdkMcpServers"] = []string{s.tools.server}
+	}
+	if len(s.hookInit) > 0 {
+		req["hooks"] = s.hookInit
+	}
+	if s.opts.EnableFileCheckpointing {
+		req["enableFileCheckpointing"] = true
 	}
 	return req
 }

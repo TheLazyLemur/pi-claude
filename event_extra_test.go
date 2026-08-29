@@ -1,0 +1,212 @@
+package pi
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+	"testing"
+)
+
+func collect(sess *Session) (*[]Event, *sync.Mutex) {
+	var mu sync.Mutex
+	var events []Event
+	sess.Subscribe(func(ev Event) {
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	})
+	return &events, &mu
+}
+
+func TestSession_PartialMessagesBecomeDeltas(t *testing.T) {
+	// given
+	// ... a session subscribed to streaming deltas
+	f := newFake()
+	sess := newTestSession(t, f, Options{IncludePartialMessages: true})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI streams a text delta and a thinking delta
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "hel"},
+		}})
+		f.push(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "hmm"},
+		}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... both arrive as deltas, tagged by kind
+	mu.Lock()
+	defer mu.Unlock()
+	var deltas []DeltaEvent
+	for _, ev := range *events {
+		if d, ok := ev.(DeltaEvent); ok {
+			deltas = append(deltas, d)
+		}
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("deltas = %v", deltas)
+	}
+	if deltas[0].Text != "hel" || deltas[0].Thinking {
+		t.Fatalf("text delta = %+v", deltas[0])
+	}
+	if deltas[1].Text != "hmm" || !deltas[1].Thinking {
+		t.Fatalf("thinking delta = %+v", deltas[1])
+	}
+}
+
+func TestSession_StatusAndCompactionEvents(t *testing.T) {
+	// given
+	// ... a subscriber watching lifecycle events
+	f := newFake()
+	sess := newTestSession(t, f, Options{})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI reports compacting, then a compaction boundary
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
+		f.push(t, map[string]any{"type": "system", "subtype": "compact_boundary",
+			"compact_metadata": map[string]any{"trigger": "auto"}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... both surface as typed events instead of being dropped
+	mu.Lock()
+	defer mu.Unlock()
+	var status *StatusEvent
+	var compact *CompactEvent
+	for _, ev := range *events {
+		switch e := ev.(type) {
+		case StatusEvent:
+			status = &e
+		case CompactEvent:
+			compact = &e
+		}
+	}
+	if status == nil || status.Status != "compacting" {
+		t.Fatalf("status event = %v", status)
+	}
+	if compact == nil || compact.Trigger != "auto" {
+		t.Fatalf("compact event = %v", compact)
+	}
+}
+
+func TestSession_AuthStatusEvent(t *testing.T) {
+	// given
+	// ... a subscriber watching authentication
+	f := newFake()
+	sess := newTestSession(t, f, Options{})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI reports authentication progress
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "auth_status", "isAuthenticating": true,
+			"output": []any{"Authenticating..."}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... it arrives as an AuthEvent
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range *events {
+		if e, ok := ev.(AuthEvent); ok {
+			if !e.Authenticating || len(e.Output) != 1 {
+				t.Fatalf("auth event = %+v", e)
+			}
+			return
+		}
+	}
+	t.Fatal("no auth event")
+}
+
+func TestSession_StructuredOutputReachesTheTurn(t *testing.T) {
+	// given
+	// ... a session constrained to a JSON answer shape
+	type verdict struct {
+		Pass bool `json:"pass"`
+	}
+	f := newFake()
+	sess := newTestSession(t, f, Options{OutputSchema: SchemaFor[verdict]()})
+
+	// when
+	// ... the CLI returns a structured result
+	go func() {
+		f.awaitWrites(t, 2)
+		result := successResult()
+		result["structured_output"] = map[string]any{"pass": true}
+		f.push(t, result)
+	}()
+	turn, err := sess.Prompt(context.Background(), "judge it")
+
+	// then
+	// ... the structured output is available and decodes into the caller's type
+	if err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if len(turn.StructuredOutput) == 0 {
+		t.Fatal("structured output missing")
+	}
+	var got verdict
+	if err := json.Unmarshal(turn.StructuredOutput, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Pass {
+		t.Fatalf("verdict = %+v", got)
+	}
+}
+
+func TestSession_RateLimitEvent(t *testing.T) {
+	// given
+	// ... a subscriber watching for rate limit reports
+	f := newFake()
+	sess := newTestSession(t, f, Options{})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI reports the current window
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "rate_limit_event", "rate_limit_info": map[string]any{
+			"status": "allowed", "resetsAt": 1788034200, "rateLimitType": "five_hour",
+			"unifiedWindows": map[string]any{
+				"five_hour": map[string]any{"utilization": 0.05},
+				"seven_day": map[string]any{"utilization": 0.1},
+			},
+		}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... the window and utilisation are available without parsing raw JSON
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range *events {
+		if e, ok := ev.(RateLimitEvent); ok {
+			if e.Status != "allowed" || e.Window != "five_hour" {
+				t.Fatalf("rate limit = %+v", e)
+			}
+			if e.Utilization["seven_day"] != 0.1 {
+				t.Fatalf("utilization = %v", e.Utilization)
+			}
+			if e.ResetsAt.IsZero() {
+				t.Fatal("resetsAt not decoded")
+			}
+			return
+		}
+	}
+	t.Fatal("no rate limit event")
+}

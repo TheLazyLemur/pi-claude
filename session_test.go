@@ -57,7 +57,8 @@ func (f *fakeTransport) push(t *testing.T, v any) {
 	t.Helper()
 	raw, err := json.Marshal(v)
 	if err != nil {
-		t.Fatalf("marshal frame: %v", err)
+		t.Errorf("marshal frame: %v", err)
+		return
 	}
 	var head struct {
 		Type      string `json:"type"`
@@ -75,7 +76,8 @@ func (f *fakeTransport) awaitWrites(t *testing.T, n int) {
 		select {
 		case <-f.wrote:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for %d writes, got %d", n, len(f.sent(t)))
+			t.Errorf("timed out waiting for %d writes", n)
+			return
 		}
 	}
 }
@@ -90,7 +92,8 @@ func (f *fakeTransport) sent(t *testing.T) []map[string]any {
 	for _, w := range f.writes {
 		var m map[string]any
 		if err := json.Unmarshal(w, &m); err != nil {
-			t.Fatalf("decode write: %v", err)
+			t.Errorf("decode write: %v", err)
+			continue
 		}
 		out = append(out, m)
 	}

@@ -28,6 +28,14 @@
 //	        return pi.Text("applied %d bytes", len(p.Code)), nil
 //	    })
 //
+// # Beyond prompting
+//
+// Hooks run at points in the CLI's lifecycle and can block or rewrite tool
+// calls ([Options.Hooks]). [Options.OutputSchema] constrains the final answer
+// to a JSON shape, returned in [Turn.StructuredOutput].
+// [Options.IncludePartialMessages] streams [DeltaEvent] as tokens arrive.
+// [Options.Agents] defines subagents the model can delegate to.
+//
 // # Locking down the tool surface
 //
 // A developer machine commonly has dozens of MCP tools configured globally. If

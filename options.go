@@ -72,6 +72,33 @@ func Deny(reason string) Decision { return Decision{Behavior: "deny", Reason: re
 // ApproveFunc decides whether a tool may run. Nil allows everything.
 type ApproveFunc func(ctx context.Context, req ToolRequest) Decision
 
+// Agent is a custom subagent the model can delegate to.
+type Agent struct {
+	// Description tells the model when to delegate to this agent.
+	Description string `json:"description"`
+
+	// Prompt is the agent's system prompt.
+	Prompt string `json:"prompt"`
+
+	// Tools restricts the agent to these tools. Empty means inherit.
+	Tools []string `json:"tools,omitempty"`
+
+	// Model overrides the session model for this agent.
+	Model string `json:"model,omitempty"`
+}
+
+// SchemaFor derives a JSON Schema from a Go type, for Options.OutputSchema.
+//
+//	type verdict struct {
+//	    Pass   bool   `json:"pass"`
+//	    Reason string `json:"reason"`
+//	}
+//	opts.OutputSchema = pi.SchemaFor[verdict]()
+func SchemaFor[T any]() map[string]any {
+	var zero T
+	return schemaOf(zero)
+}
+
 // Options configures a session. The zero value is usable: it starts the CLI
 // with its normal defaults.
 type Options struct {
@@ -109,7 +136,59 @@ type Options struct {
 	ApproveTool ApproveFunc
 
 	// PermissionMode controls the CLI's own permission behaviour.
+	//
+	// Set this explicitly, including to PermissionModeDefault, whenever
+	// ApproveTool matters: a machine configured to auto-approve otherwise
+	// never asks. The zero value passes no flag and defers to that config.
 	PermissionMode PermissionMode
+
+	// Hooks run at points in the CLI's own lifecycle. See HookEvent.
+	Hooks map[HookEvent][]HookMatcher
+
+	// Agents are custom subagents the model can delegate to, keyed by name.
+	Agents map[string]Agent
+
+	// OutputSchema constrains the final answer to a JSON shape. When set, the
+	// turn's StructuredOutput carries the validated result. Build one with
+	// SchemaFor.
+	OutputSchema map[string]any
+
+	// IncludePartialMessages streams DeltaEvent as tokens arrive, rather than
+	// only whole blocks.
+	IncludePartialMessages bool
+
+	// EnableFileCheckpointing lets Session.RewindFiles undo file edits.
+	EnableFileCheckpointing bool
+
+	// AdditionalDirectories are extra directories tools may reach.
+	AdditionalDirectories []string
+
+	// FallbackModel is tried when the primary model is overloaded.
+	FallbackModel string
+
+	// Betas are beta headers for the API request. API key users only.
+	Betas []string
+
+	// SettingSources limits which settings files load: user, project, local.
+	// Empty leaves the CLI's own behaviour alone.
+	SettingSources []string
+
+	// MCPConfig loads external MCP servers from JSON files or literal JSON.
+	MCPConfig []string
+
+	// StrictMCPConfig ignores MCP servers configured on this machine, so only
+	// those from MCPConfig are used. Implied by NoToolsAll.
+	StrictMCPConfig bool
+
+	// NoSessionPersistence keeps the session off disk, so it cannot be resumed.
+	NoSessionPersistence bool
+
+	// ForkSession gives a resumed session a new id instead of continuing the
+	// original.
+	ForkSession bool
+
+	// ResumeSessionAt resumes from a specific message id.
+	ResumeSessionAt string
 
 	// Resume continues a previous session by id.
 	Resume string

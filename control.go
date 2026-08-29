@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/TheLazyLemur/pi-claude/internal/proto"
 )
@@ -18,6 +19,7 @@ func (s *Session) onControlRequest(frame proto.Frame) {
 			Input      map[string]any `json:"input"`
 			ServerName string         `json:"server_name"`
 			Message    map[string]any `json:"message"`
+			CallbackID string         `json:"callback_id"`
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(frame.Raw, &req); err != nil {
@@ -29,6 +31,8 @@ func (s *Session) onControlRequest(frame proto.Frame) {
 		s.answerPermission(req.RequestID, req.Request.ToolName, req.Request.ToolUseID, req.Request.Input)
 	case "mcp_message":
 		s.answerMCP(req.RequestID, req.Request.ServerName, req.Request.Message)
+	case "hook_callback":
+		s.answerHook(req.RequestID, req.Request.CallbackID, req.Request.Input)
 	case "initialize":
 		s.respond(req.RequestID, map[string]any{})
 	}
@@ -123,4 +127,36 @@ func (s *Session) respondError(requestID, msg string) {
 			"error":      msg,
 		},
 	})
+}
+
+// onControlResponse hands the CLI's reply to whichever request is waiting.
+func (s *Session) onControlResponse(frame proto.Frame) {
+	var msg struct {
+		Response struct {
+			Subtype   string         `json:"subtype"`
+			RequestID string         `json:"request_id"`
+			Response  map[string]any `json:"response"`
+			Error     string         `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(frame.Raw, &msg) != nil {
+		return
+	}
+
+	s.mu.Lock()
+	reply, waiting := s.awaiting[msg.Response.RequestID]
+	s.mu.Unlock()
+	if !waiting {
+		return
+	}
+
+	out := controlReply{body: msg.Response.Response}
+	if msg.Response.Subtype == "error" {
+		out.err = fmt.Errorf("pi: %s", msg.Response.Error)
+	}
+
+	select {
+	case reply <- out:
+	default:
+	}
 }
