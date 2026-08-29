@@ -105,8 +105,17 @@ dialog .why{margin:0 0 18px; color:var(--dim); font-size:13.5px}
 dialog textarea{width:100%; min-height:88px; resize:vertical; padding:11px 13px; font:inherit;
   background:var(--paper); border:1px solid var(--rule); border-radius:2px}
 dialog textarea:focus{outline:none; border-color:var(--signal); background:var(--card)}
-dialog select{width:100%; padding:8px 10px; font:inherit; background:var(--paper);
-  border:1px solid var(--rule); border-radius:2px; margin-bottom:12px}
+dialog select,dialog input[type=text]{width:100%; padding:8px 10px; font:inherit;
+  background:var(--paper); border:1px solid var(--rule); border-radius:2px}
+dialog input[type=text]{font-family:var(--mono); font-size:13px}
+dialog select:focus,dialog input[type=text]:focus{outline:none; border-color:var(--signal); background:var(--card)}
+.banner{
+  display:flex; gap:10px; align-items:center; max-width:820px; margin:0 auto calc(var(--u)*2);
+  border:1px solid var(--del); background:var(--del-bg); color:var(--del);
+  padding:10px 14px; border-radius:2px; font-size:13.5px;
+}
+.banner .label{color:var(--del)}
+.banner a{margin-left:auto; color:var(--del)}
 dialog .field{margin-bottom:14px}
 dialog .check{display:flex; gap:9px; align-items:flex-start; font-size:13.5px; margin:14px 0 20px}
 dialog .check input{margin-top:3px}
@@ -289,6 +298,7 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
 
     <main class="main">
       <div class="scroll" id="scroll">
+        {{BANNER}}
         <div class="stream" id="stream" sse-swap="msg" hx-swap="beforeend scroll:#scroll:bottom transition:true">{{STREAM}}
         </div>
       </div>
@@ -316,11 +326,19 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
     <p class="why">Its own claude process, its own transcript.</p>
     <div class="field">
       <label class="label" for="ws">Project</label>
-      <select name="workspace" id="ws">{{WSOPTIONS}}</select>
+      <select name="workspace" id="ws"
+              onchange="document.getElementById('newpath').hidden = this.value !== 'new'">
+        {{WSOPTIONS}}
+        <option value="new">Add a project&hellip;</option>
+      </select>
+    </div>
+    <div class="field" id="newpath" hidden>
+      <label class="label" for="path">Path to the project</label>
+      <input type="text" name="path" id="path" placeholder="~/code/api" spellcheck="false">
     </div>
     <div class="field">
       <label class="label" for="first">First message</label>
-      <textarea name="prompt" id="first" placeholder="What should it start on?" required></textarea>
+      <textarea name="prompt" id="first" placeholder="Optional. Leave empty to just open it."></textarea>
     </div>
     <label class="check">
       <input type="checkbox" name="worktree" value="1">
@@ -544,6 +562,7 @@ type pageData struct {
 	Rail     string
 	Todos    string
 	SID      string
+	Error    string
 }
 
 func renderPage(d pageData) string {
@@ -567,7 +586,15 @@ func renderPage(d pageData) string {
 		todos = `<span class="label" style="color:#aab3c0">None yet</span>`
 	}
 
+	banner := ""
+	if d.Error != "" {
+		banner = fmt.Sprintf(
+			`<div class="banner"><span class="label">Could not add</span> %s <a href="?">Dismiss</a></div>`,
+			esc(d.Error))
+	}
+
 	return strings.NewReplacer(
+		"{{BANNER}}", banner,
 		"{{TITLE}}", esc(d.Title),
 		"{{ROOT}}", esc(d.Root),
 		"{{BADGE}}", d.Badge,

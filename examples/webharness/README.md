@@ -30,9 +30,15 @@ project's own instructions and reimplementing it would be silly.
 
 ## Projects, sessions and worktrees
 
-Every directory you name on the command line is a project. Each session is its
-own `claude` process with its own transcript, and the sidebar lists them across
-every project.
+Every directory you name on the command line is a project, and you can add more
+without restarting: **New session** &rarr; **Add a project&hellip;** &rarr; type a
+path. `~` works, relative paths resolve against where the console was started,
+and a path that is missing or is a file says so rather than failing quietly.
+
+Leave the first message empty to just open the project and look around.
+
+Each session is its own `claude` process with its own transcript, and the
+sidebar lists them across every project.
 
 A new session can open **in a git worktree**. Tick the box, give it a first
 message, and the console branches off HEAD into `.worktrees/<name>` on
@@ -104,8 +110,13 @@ waits for a tab.
 
 ## Caveats
 
-Sessions live in memory. Restarting the console loses transcripts, though the
-worktrees and branches it made are still there in git.
+Sessions and the project list live in memory. Restarting the console loses
+transcripts and any project added through the UI, though the worktrees and
+branches it made are still there in git.
+
+A walk stops at 5000 files, so pointing it at something enormous keeps the page
+quick and tells the model it only saw part of the tree. Hidden directories are
+skipped.
 
 `-debug` adds `POST /debug/replay`, which renders a fake turn so the UI can be
 worked on without paying a model.

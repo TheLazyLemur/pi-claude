@@ -65,7 +65,7 @@ func (a *Session) tools() []pi.Tool {
 	return []pi.Tool{
 		pi.DefineTool("list_files", "List the files in the workspace.",
 			func(_ context.Context, p listParams) (pi.ToolResult, error) {
-				paths, err := w.walk()
+				paths, truncated, err := w.walk()
 				if err != nil {
 					return pi.Errorf("could not list files: %v", err), nil
 				}
@@ -82,7 +82,11 @@ func (a *Session) tools() []pi.Tool {
 				if len(paths) == 0 {
 					return pi.Text("no files"), nil
 				}
-				return pi.Text("%s", strings.Join(paths, "\n")), nil
+				listing := strings.Join(paths, "\n")
+				if truncated {
+					listing += fmt.Sprintf("\n... stopped at %d files; narrow it with dir or search", maxFiles)
+				}
+				return pi.Text("%s", listing), nil
 			}),
 
 		pi.DefineTool("read_file", "Read a file. Returns it with line numbers.",
@@ -117,7 +121,7 @@ func (a *Session) tools() []pi.Tool {
 				if p.Pattern == "" {
 					return pi.Errorf("pattern must not be empty"), nil
 				}
-				paths, err := w.walk()
+				paths, _, err := w.walk()
 				if err != nil {
 					return pi.Errorf("could not search: %v", err), nil
 				}

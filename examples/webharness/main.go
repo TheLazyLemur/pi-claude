@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +104,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 
 	stream, rail := sess.Replay()
 
-	files, _ := sess.ws.walk()
+	files, _, _ := sess.ws.walk()
 	turns, cost, in, out := sess.Meter()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -121,6 +122,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		Rail:     rail,
 		Todos:    todosHTML(sess.Todos()),
 		SID:      sess.ID,
+		Error:    r.URL.Query().Get("err"),
 	}))
 }
 
@@ -154,22 +156,49 @@ func (s *server) mode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// create starts a session, optionally in a worktree of its own, and sends the
-// first message straight into it.
+// create starts a session, adding the project first if it is a new one, and
+// sends the first message straight into it.
 func (s *server) create(w http.ResponseWriter, r *http.Request) {
-	ws := s.store.Workspace(r.FormValue("workspace"))
-	if ws == nil {
-		http.Error(w, "unknown project", http.StatusBadRequest)
+	ws, err := s.pick(r)
+	if err != nil {
+		s.back(w, r, err)
 		return
 	}
 
 	first := strings.TrimSpace(r.FormValue("prompt"))
 	sess, err := s.start(ws, r.FormValue("worktree") == "1", first)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.back(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/s/"+sess.ID, http.StatusSeeOther)
+}
+
+// pick resolves the chosen project, adding it when the person typed a path for
+// one the console has not seen before.
+func (s *server) pick(r *http.Request) (*Workspace, error) {
+	if id := r.FormValue("workspace"); id != "new" {
+		ws := s.store.Workspace(id)
+		if ws == nil {
+			return nil, fmt.Errorf("that project is no longer here")
+		}
+		return ws, nil
+	}
+
+	path, err := expandPath(r.FormValue("path"))
+	if err != nil {
+		return nil, err
+	}
+	return s.store.AddWorkspace(path)
+}
+
+// back returns to where the person was, carrying what went wrong.
+func (s *server) back(w http.ResponseWriter, r *http.Request, err error) {
+	to := "/"
+	if all := s.store.Sessions(); len(all) > 0 {
+		to = "/s/" + all[0].ID
+	}
+	http.Redirect(w, r, to+"?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 }
 
 // start builds a session and, when asked, the worktree it lives in.

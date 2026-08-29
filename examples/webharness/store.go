@@ -147,6 +147,38 @@ func run(dir, name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// expandPath makes a typed-in path usable: ~ becomes the home directory and
+// everything is resolved to absolute, so relative paths mean what the person
+// sitting in front of the console expects.
+func expandPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("give a path to the project")
+	}
+
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+	}
+
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s does not exist", abs)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is a file, not a directory", abs)
+	}
+	return abs, nil
+}
+
 var notSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 func slug(s string) string {

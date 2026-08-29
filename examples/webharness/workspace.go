@@ -25,6 +25,10 @@ type change struct {
 	Del   int
 }
 
+// maxFiles bounds a walk. Someone will eventually point this at a home
+// directory, and neither the page nor the model wants a hundred thousand paths.
+const maxFiles = 5000
+
 var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "vendor": true,
 	".venv": true, "dist": true, "build": true, "target": true,
@@ -81,21 +85,35 @@ func (w *workspace) Changes() []change {
 	return append([]change(nil), w.changes...)
 }
 
-func (w *workspace) walk() ([]string, error) {
+// walk lists the files in the workspace, stopping at maxFiles. The second
+// return says whether it gave up early, so callers can say so rather than
+// quietly showing a partial answer.
+func (w *workspace) walk() ([]string, bool, error) {
 	var out []string
+	truncated := false
+
 	err := filepath.WalkDir(w.root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			// An unreadable directory is not a reason to abandon the walk.
+			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] || (d.Name() != "." && strings.HasPrefix(d.Name(), ".") && path != w.root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(out) >= maxFiles {
+			truncated = true
+			return filepath.SkipAll
+		}
 		out = append(out, w.rel(path))
 		return nil
 	})
+
 	sort.Strings(out)
-	return out, err
+	return out, truncated, err
 }
