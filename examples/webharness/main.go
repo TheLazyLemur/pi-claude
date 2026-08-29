@@ -1,12 +1,15 @@
-// Console: a browser front end for a Claude Code session where every tool is
+// Console: a browser front end for Claude Code sessions where every tool is
 // this program's own. Go, htmx and server-sent events. No JavaScript framework.
 //
-//	go run ./examples/webharness            # serves the current directory
-//	go run ./examples/webharness -C ./proj -addr :8080
+//	go run ./examples/webharness                       # the current directory
+//	go run ./examples/webharness ../a ../b             # several projects
+//	go run ./examples/webharness -addr :8080 ../a      # flags come first
+//
+// Each session is its own claude process with its own transcript. A session can
+// be opened in a git worktree, so two of them on one project never collide.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -14,121 +17,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	pi "github.com/TheLazyLemur/pi-claude"
 )
 
 func main() {
-	dir := flag.String("C", ".", "directory the agent works in")
 	addr := flag.String("addr", "127.0.0.1:7777", "address to serve on")
 	model := flag.String("model", "", "model to use (default: the CLI's)")
 	debug := flag.Bool("debug", false, "enable /debug/replay, which renders a fake turn")
 	flag.Parse()
 
-	ws, err := newWorkspace(*dir)
-	if err != nil {
-		log.Fatal(err)
+	roots := flag.Args()
+	if len(roots) == 0 {
+		roots = []string{"."}
 	}
 
 	hub := NewHub()
-	app := NewApp(hub, ws)
-
-	sess, err := pi.New(context.Background(), pi.Options{
-		CWD:   ws.root,
-		Model: *model,
-
-		// Skill is the one built-in kept: it is how Claude Code loads a
-		// project's own instructions, and reimplementing it would be silly.
-		// Everything else the agent can do is ours.
-		Tools:           []string{"Skill"},
-		StrictMCPConfig: true,
-		CustomTools:     app.tools(),
-
-		SystemPrompt: systemPrompt,
-		MaxTurns:     60,
-
-		PermissionMode: pi.PermissionModeDefault,
-		ApproveTool: func(_ context.Context, req pi.ToolRequest) pi.Decision {
-			if req.Mine || req.Name == "Skill" {
-				return pi.Allow()
-			}
-			return pi.Deny("this console only exposes its own tools")
-		},
-
-		Stderr: func(line string) { fmt.Fprintln(os.Stderr, "claude:", line) },
-	})
-	if err != nil {
-		log.Fatal(err)
+	store := NewStore()
+	for _, root := range roots {
+		w, err := store.AddWorkspace(root)
+		if err != nil {
+			log.Fatalf("%s: %v", root, err)
+		}
+		fmt.Printf("project  %s%s\n", w.Root, map[bool]string{true: "  (git)"}[w.IsRepo])
 	}
-	defer sess.Close()
 
-	app.sess = sess
-	app.watch()
-
-	files, _ := ws.walk()
+	srv := &server{store: store, hub: hub, model: *model, debug: *debug}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, renderPage(
-			filepath.Base(ws.root), shortPath(ws.root),
-			meterHTML(0, 0, 0, 0), modesHTML(app.Mode()), len(files), seeds(files)))
-	})
+	mux.HandleFunc("GET /{$}", srv.index)
+	mux.HandleFunc("GET /s/{id}", srv.session)
+	mux.HandleFunc("POST /s/{id}/prompt", srv.prompt)
+	mux.HandleFunc("POST /s/{id}/interrupt", srv.interrupt)
+	mux.HandleFunc("POST /s/{id}/mode", srv.mode)
+	mux.HandleFunc("POST /sessions", srv.create)
 	mux.Handle("GET /events", hub)
-
-	mux.HandleFunc("POST /prompt", func(w http.ResponseWriter, r *http.Request) {
-		text := strings.TrimSpace(r.FormValue("prompt"))
-		if text == "" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		app.Ask(text)
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("POST /interrupt", func(w http.ResponseWriter, r *http.Request) {
-		sess.Interrupt()
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("POST /mode", func(w http.ResponseWriter, r *http.Request) {
-		m := r.URL.Query().Get("m")
-		if m != "plan" && m != "act" {
-			http.Error(w, "mode must be plan or act", http.StatusBadRequest)
-			return
-		}
-		app.SetMode(m)
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// A synthetic turn, so the rendering path can be exercised without paying a
-	// model to reproduce something. Off unless asked for.
-	mux.HandleFunc("POST /debug/replay", func(w http.ResponseWriter, r *http.Request) {
-		if !*debug {
-			http.NotFound(w, r)
-			return
-		}
-		for i, name := range []string{"read_file", "write_file", "edit_file"} {
-			id := fmt.Sprintf("dbg-%d", i)
-			arg := "cart.go"
-			app.queueCard(name, id, arg)
-			hub.Send("msg", toolHTML(id, name, arg))
-			hub.Send("rail", tickHTML(id, name, arg, kindOf(name), true, false))
-		}
-		app.settle("read_file", "read")
-		app.showDiff(app.claimCard("write_file"), "write", "new.go", "", "package new\n\nfunc A() {}\n")
-		app.showDiff(app.claimCard("edit_file"), "edit", "cart.go",
-			"package cart\n\nfunc Total() int {\n\treturn 0\n}\n",
-			"package cart\n\nfunc Total() int {\n\treturn 42\n}\n")
-		w.WriteHeader(http.StatusNoContent)
-	})
+	mux.HandleFunc("POST /debug/replay", srv.replay)
 
 	fmt.Printf("console  http://%s\n", *addr)
-	fmt.Printf("agent    %s (%d files)\n", ws.root, len(files))
 	fmt.Printf("tools    6 custom, plus Skill. No other built-ins.\n\n")
 
 	if err := http.ListenAndServe(*addr, mux); err != nil {
@@ -136,82 +60,179 @@ func main() {
 	}
 }
 
-// watch turns session events into page updates.
-func (a *App) watch() {
-	a.sess.Subscribe(func(ev pi.Event) {
-		switch e := ev.(type) {
-		case pi.TextEvent:
-			a.hub.Send("msg", agentHTML(e.Text))
-
-		case pi.ThinkingEvent:
-			a.hub.Send("msg", thinkHTML(e.Text))
-
-		case pi.ToolCallEvent:
-			arg := summarise(e.Input)
-			a.queueCard(e.Name, e.ID, arg)
-			a.hub.Send("msg", toolHTML(e.ID, e.Name, arg)+"")
-			a.hub.Send("rail", tickHTML(e.ID, e.Name, arg, kindOf(e.Name), true, false))
-
-		case pi.DeniedEvent:
-			a.hub.Send("msg", fmt.Sprintf(
-				`<div class="tool deny"><header><span class="name">%s</span></header><div class="note">%s</div></div>`,
-				esc(e.Name), esc(e.Reason)))
-
-		case pi.TurnEvent:
-			a.finish(e.Turn)
-
-		case pi.ErrorEvent:
-			a.hub.Send("msg", fmt.Sprintf(
-				`<div class="tool err"><header><span class="name">error</span></header><div class="note">%s</div></div>`,
-				esc(e.Err.Error())))
-		}
-	})
+type server struct {
+	store *Store
+	hub   *Hub
+	model string
+	debug bool
 }
 
-// Ask sends a prompt, unless a turn is already running.
-func (a *App) Ask(text string) {
-	a.mu.Lock()
-	if a.busy {
-		a.mu.Unlock()
-		a.hub.Send("msg", `<div class="tool deny"><header><span class="name">busy</span></header>`+
-			`<div class="note">Still working on the last one. Stop it first, or wait.</div></div>`)
+// index sends you to the newest session, or offers a blank one on the first
+// project when there is nothing yet.
+func (s *server) index(w http.ResponseWriter, r *http.Request) {
+	if all := s.store.Sessions(); len(all) > 0 {
+		http.Redirect(w, r, "/s/"+all[0].ID, http.StatusSeeOther)
 		return
 	}
-	a.busy = true
-	a.mu.Unlock()
 
-	a.hub.Send("msg", userHTML(text))
-	a.hub.Send("msg", `<button class="stop" id="stop" data-live="1" hx-post="/interrupt" hx-swap="none" hx-swap-oob="true">Stop</button>`)
+	ws := s.store.Workspaces()
+	if len(ws) == 0 {
+		http.Error(w, "no projects", http.StatusInternalServerError)
+		return
+	}
 
-	go func() {
-		if _, err := a.sess.Prompt(context.Background(), text); err != nil {
-			a.hub.Send("msg", fmt.Sprintf(
-				`<div class="tool err"><header><span class="name">failed</span></header><div class="note">%s</div></div>`,
-				esc(err.Error())))
-			a.idle()
+	sess, err := s.start(ws[0], false, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/s/"+sess.ID, http.StatusSeeOther)
+}
+
+func (s *server) session(w http.ResponseWriter, r *http.Request) {
+	sess := s.store.Session(r.PathValue("id"))
+	if sess == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	byID := map[string]*Workspace{}
+	for _, ws := range s.store.Workspaces() {
+		byID[ws.ID] = ws
+	}
+
+	stream, rail := sess.Replay()
+
+	files, _ := sess.ws.walk()
+	turns, cost, in, out := sess.Meter()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, renderPage(pageData{
+		Title:    filepath.Base(sess.Root),
+		Root:     shortPath(sess.Root),
+		Badge:    badgeHTML(sess.Branch),
+		Meter:    meterHTML(turns, cost, in, out),
+		Modes:    modesHTML(sess.ID, sess.Mode()),
+		Files:    len(files),
+		Seeds:    seeds(files),
+		Sessions: sessionsHTML(s.store.Sessions(), byID, sess.ID),
+		Options:  optionsHTML(s.store.Workspaces(), sess.WorkspaceID),
+		Stream:   stream,
+		Rail:     rail,
+		Todos:    todosHTML(sess.Todos()),
+		SID:      sess.ID,
+	}))
+}
+
+func (s *server) prompt(w http.ResponseWriter, r *http.Request) {
+	sess := s.store.Session(r.PathValue("id"))
+	if sess == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if text := strings.TrimSpace(r.FormValue("prompt")); text != "" {
+		sess.Ask(text)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) interrupt(w http.ResponseWriter, r *http.Request) {
+	if sess := s.store.Session(r.PathValue("id")); sess != nil {
+		sess.Interrupt()
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) mode(w http.ResponseWriter, r *http.Request) {
+	sess := s.store.Session(r.PathValue("id"))
+	m := r.URL.Query().Get("m")
+	if sess == nil || (m != "plan" && m != "act") {
+		http.Error(w, "unknown session or mode", http.StatusBadRequest)
+		return
+	}
+	sess.SetMode(m)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// create starts a session, optionally in a worktree of its own, and sends the
+// first message straight into it.
+func (s *server) create(w http.ResponseWriter, r *http.Request) {
+	ws := s.store.Workspace(r.FormValue("workspace"))
+	if ws == nil {
+		http.Error(w, "unknown project", http.StatusBadRequest)
+		return
+	}
+
+	first := strings.TrimSpace(r.FormValue("prompt"))
+	sess, err := s.start(ws, r.FormValue("worktree") == "1", first)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/s/"+sess.ID, http.StatusSeeOther)
+}
+
+// start builds a session and, when asked, the worktree it lives in.
+func (s *server) start(ws *Workspace, worktree bool, first string) (*Session, error) {
+	root, branch := ws.Root, ""
+
+	if worktree {
+		repo := repoRoot(ws.Root)
+		if repo == "" {
+			return nil, fmt.Errorf("%s is not a git repository, so it has no worktrees", ws.Name)
 		}
-	}()
+		name := sessionName(first) + "-" + strings.TrimPrefix(s.store.nextID(), "s")
+		path, br, err := addWorktree(repo, name)
+		if err != nil {
+			return nil, err
+		}
+		root, branch = path, br
+	}
+
+	sess, err := NewSession(s.store.nextID(), ws.ID, root, branch, worktree, s.hub, s.model)
+	if err != nil {
+		return nil, err
+	}
+	sess.Title = first
+	s.store.put(sess)
+
+	// The browser has not connected to this session's stream yet, so the first
+	// message waits for the redirect to land.
+	if first != "" {
+		go func() {
+			waitForWatcher(s.hub, sess.ID)
+			sess.Ask(first)
+		}()
+	}
+	return sess, nil
 }
 
-func (a *App) finish(t pi.Turn) {
-	a.mu.Lock()
-	a.turns += t.Turns
-	a.cost += t.CostUSD
-	a.in += t.Usage.InputTokens
-	a.out += t.Usage.OutputTokens
-	turns, cost, in, out := a.turns, a.cost, a.in, a.out
-	a.mu.Unlock()
+// replay renders a fake turn so the UI can be worked on without paying a model.
+func (s *server) replay(w http.ResponseWriter, r *http.Request) {
+	if !s.debug {
+		http.NotFound(w, r)
+		return
+	}
+	sess := s.store.Session(r.URL.Query().Get("s"))
+	if sess == nil {
+		http.Error(w, "unknown session", http.StatusBadRequest)
+		return
+	}
 
-	a.hub.Send("meter", meterHTML(turns, cost, in, out))
-	a.idle()
-}
-
-func (a *App) idle() {
-	a.mu.Lock()
-	a.busy = false
-	a.pending = map[string][]string{}
-	a.mu.Unlock()
-	a.hub.Send("msg", `<button class="stop" id="stop" data-live="0" hx-post="/interrupt" hx-swap="none" hx-swap-oob="true">Stop</button>`)
+	sess.emit("msg", renderEntry(sess.note(&entry{Kind: "user", Text: "a fake turn, for working on the UI"})))
+	for i, name := range []string{"read_file", "write_file", "edit_file"} {
+		id := fmt.Sprintf("dbg-%d", i)
+		sess.queueCard(name, id, "cart.go")
+		sess.note(&entry{Kind: "tool", ID: id, Name: name, Arg: "cart.go", Rail: true})
+		sess.emit("msg", toolHTML(id, name, "cart.go"))
+		sess.emit("rail", tickHTML(id, name, "cart.go", kindOf(name), true, false))
+	}
+	sess.settle("read_file", "read")
+	sess.showDiff(sess.claimCard("write_file"), "write", "new.go", "", "package new\n\nfunc A() {}\n")
+	sess.showDiff(sess.claimCard("edit_file"), "edit", "cart.go",
+		"package cart\n\nfunc Total() int {\n\treturn 0\n}\n",
+		"package cart\n\nfunc Total() int {\n\treturn 42\n}\n")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // kindOf colours a rail tick by what the tool does.
@@ -234,14 +255,11 @@ func summarise(input map[string]any) string {
 	if items, ok := input["items"].([]any); ok {
 		return fmt.Sprintf("%d items", len(items))
 	}
-	if v, ok := input["command"].(string); ok {
-		return v
-	}
 	return ""
 }
 
-// seeds are the openers offered on an empty console. They are suggestions, so
-// they name the work rather than the tools.
+// seeds are the openers offered on an empty console. They name the work rather
+// than the tools.
 func seeds(files []string) []string {
 	out := []string{"Explain what this code does"}
 	for _, f := range files {

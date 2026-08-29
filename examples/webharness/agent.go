@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	pi "github.com/TheLazyLemur/pi-claude"
 )
@@ -15,76 +14,6 @@ type todo struct {
 	Task   string `json:"task" desc:"Short description of the piece of work"`
 	Status string `json:"status" desc:"pending, doing or done"`
 }
-
-// App holds everything one browser session drives.
-type App struct {
-	hub  *Hub
-	ws   *workspace
-	sess *pi.Session
-
-	mu      sync.Mutex
-	mode    string // "plan" or "act"
-	todos   []todo
-	turns   int
-	cost    float64
-	in, out int
-	busy    bool
-	pending map[string][]string // tool name -> card ids awaiting execution
-	ticks   map[string]tick     // card id -> what its rail entry says
-}
-
-// tick is what a rail entry shows, kept so the entry can be redrawn whole when
-// its tool finishes. htmx replaces elements, not attributes.
-type tick struct {
-	Name string
-	Arg  string
-}
-
-func NewApp(hub *Hub, ws *workspace) *App {
-	return &App{
-		hub:     hub,
-		ws:      ws,
-		mode:    "act",
-		pending: map[string][]string{},
-		ticks:   map[string]tick{},
-	}
-}
-
-// queueCard remembers a card so the tool can find it when it runs. The CLI
-// announces every tool call in a message before running any of them, so one
-// "current card" pointer would break the moment two calls arrive together.
-func (a *App) queueCard(name, id, arg string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.pending[name] = append(a.pending[name], id)
-	a.ticks[id] = tick{Name: name, Arg: arg}
-}
-
-func (a *App) claimCard(name string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	q := a.pending[name]
-	if len(q) == 0 {
-		return ""
-	}
-	a.pending[name] = q[1:]
-	return q[0]
-}
-
-func (a *App) Mode() string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.mode
-}
-
-func (a *App) SetMode(m string) {
-	a.mu.Lock()
-	a.mode = m
-	a.mu.Unlock()
-	a.hub.Send("modes", modesHTML(m))
-}
-
-func (a *App) planning() bool { return a.Mode() == "plan" }
 
 const systemPrompt = `You are a coding agent working in one directory, driven from a web console.
 
@@ -105,7 +34,7 @@ you would change and why. Do not fight the refusal.
 
 Be terse. No preamble, no summaries of what you just did unless asked.`
 
-func (a *App) tools() []pi.Tool {
+func (a *Session) tools() []pi.Tool {
 	w := a.ws
 
 	type listParams struct {
@@ -281,10 +210,8 @@ func (a *App) tools() []pi.Tool {
 
 		pi.DefineTool("todo_write", "Set the task list the person is watching. Send the whole list every time.",
 			func(_ context.Context, p todoParams) (pi.ToolResult, error) {
-				a.mu.Lock()
-				a.todos = p.Items
-				a.mu.Unlock()
-				a.hub.Send("todos", todosHTML(p.Items))
+				a.setTodos(p.Items)
+				a.emit("todos", todosHTML(p.Items))
 				a.settle("todo_write", "read")
 				return pi.Text("task list updated (%d items)", len(p.Items)), nil
 			}),
@@ -292,46 +219,51 @@ func (a *App) tools() []pi.Tool {
 }
 
 // settle stops a tick pulsing once its tool has finished.
-func (a *App) settle(name, kind string) {
+func (a *Session) settle(name, kind string) {
 	a.settleCard(a.claimCard(name), kind)
 }
 
-func (a *App) settleCard(card, kind string) {
-	if card == "" {
+func (a *Session) settleCard(card, kind string) {
+	var name, arg string
+	e := a.updateCard(card, func(e *entry) {
+		e.Settled = kind
+		name, arg = e.Name, e.Arg
+	})
+	if e == nil {
 		return
 	}
-	a.mu.Lock()
-	t := a.ticks[card]
-	a.mu.Unlock()
-	a.hub.Send("msg", tickHTML(card, t.Name, t.Arg, kind, false, true))
+	a.emit("msg", tickHTML(card, name, arg, kind, false, true))
 }
 
-func (a *App) showDiff(card, kind, path, before, after string) {
+func (a *Session) showDiff(card, kind, path, before, after string) {
 	hunks := unifiedDiff(before, after)
 	added, removed := countChanges(hunks)
 	a.ws.record(change{Path: path, Kind: kind, Added: added, Del: removed})
 	if card == "" {
 		return
 	}
-	a.hub.Send("msg", diffHTML(card, hunks))
+	a.updateCard(card, func(e *entry) { e.Hunks = hunks })
+	a.emit("msg", diffHTML(card, hunks))
 	a.settleCard(card, "write")
 }
 
-func (a *App) fail(card, msg string) {
+func (a *Session) fail(card, msg string) {
 	if card == "" {
 		return
 	}
-	a.hub.Send("msg", fmt.Sprintf(
+	a.updateCard(card, func(e *entry) { e.Note = msg })
+	a.emit("msg", fmt.Sprintf(
 		`<div id="%s" hx-swap-oob="beforeend"><div class="note">%s</div></div>`, card, esc(msg)))
 	a.settleCard(card, "deny")
 }
 
-func (a *App) refuse(card, name string) {
+func (a *Session) refuse(card, name string) {
 	if card == "" {
 		return
 	}
-	a.hub.Send("msg", fmt.Sprintf(
-		`<div id="%s" hx-swap-oob="beforeend"><div class="note">Refused. Plan mode is on, so %s cannot run.</div></div>`,
-		card, esc(name)))
+	note := "Refused. Plan mode is on, so " + name + " cannot run."
+	a.updateCard(card, func(e *entry) { e.Note = note })
+	a.emit("msg", fmt.Sprintf(
+		`<div id="%s" hx-swap-oob="beforeend"><div class="note">%s</div></div>`, card, esc(note)))
 	a.settleCard(card, "deny")
 }

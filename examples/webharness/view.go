@@ -73,10 +73,51 @@ button{font-family:inherit; font-size:inherit; cursor:pointer}
 .panes{display:grid; grid-template-columns:212px 1fr; min-height:0}
 .side{
   border-right:1px solid var(--rule); background:var(--card);
-  display:grid; grid-template-rows:1fr minmax(88px,auto); min-height:0;
+  display:grid; grid-template-rows:auto 1fr auto; min-height:0;
 }
 .side section{padding:calc(var(--u)*2); min-height:0; overflow:auto}
-.side .todos{border-top:1px solid var(--rule)}
+.side .todos{border-top:1px solid var(--rule); max-height:34vh}
+.side .work{border-bottom:1px solid var(--rule); max-height:38vh}
+.side .head{display:flex; align-items:center; gap:8px; margin:0 0 calc(var(--u)*1.5)}
+.side .head h2{margin:0; font:inherit}
+.newbtn{margin-left:auto; border:1px solid var(--rule); background:var(--card); color:var(--dim);
+  width:20px; height:20px; line-height:1; border-radius:2px; padding:0; font-size:14px}
+.newbtn:hover{border-color:var(--signal); color:var(--signal)}
+
+.slist{display:flex; flex-direction:column; gap:2px}
+.srow{
+  display:block; padding:6px 8px; border-radius:2px; text-decoration:none; color:var(--ink);
+  border:1px solid transparent;
+}
+.srow:hover{background:var(--paper)}
+.srow[aria-current="true"]{background:var(--signal-soft); border-color:#d9cdfa}
+.srow .t{display:block; font-size:12.5px; line-height:1.3; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.srow .m{display:block; font-family:var(--mono); font-size:10px; color:var(--dim); margin-top:2px}
+.wt{color:var(--signal)}
+
+dialog{border:1px solid var(--rule); border-radius:3px; padding:0; max-width:520px; width:92vw;
+  box-shadow:0 24px 60px rgba(17,24,39,.16)}
+dialog::backdrop{background:rgba(17,24,39,.28)}
+dialog form{padding:calc(var(--u)*3)}
+dialog h3{margin:0 0 4px; font-size:17px; letter-spacing:-.02em}
+dialog .why{margin:0 0 18px; color:var(--dim); font-size:13.5px}
+dialog textarea{width:100%; min-height:88px; resize:vertical; padding:11px 13px; font:inherit;
+  background:var(--paper); border:1px solid var(--rule); border-radius:2px}
+dialog textarea:focus{outline:none; border-color:var(--signal); background:var(--card)}
+dialog select{width:100%; padding:8px 10px; font:inherit; background:var(--paper);
+  border:1px solid var(--rule); border-radius:2px; margin-bottom:12px}
+dialog .field{margin-bottom:14px}
+dialog .check{display:flex; gap:9px; align-items:flex-start; font-size:13.5px; margin:14px 0 20px}
+dialog .check input{margin-top:3px}
+dialog .check span{color:var(--dim)}
+dialog .check b{display:block; color:var(--ink); font-weight:500}
+dialog .actions{display:flex; gap:10px; justify-content:flex-end}
+.ghost{border:1px solid var(--rule); background:var(--card); color:var(--dim); padding:8px 16px; border-radius:2px}
+.ghost:hover{border-color:var(--ink); color:var(--ink)}
+
+.badge{font-family:var(--mono); font-size:10px; letter-spacing:.06em; padding:2px 7px;
+  border:1px solid #d9cdfa; color:var(--signal); background:var(--signal-soft); border-radius:999px}
 .side h2{margin:0 0 calc(var(--u)*1.5); font:inherit}
 
 /* ---------- the rail: this page's signature ---------- */
@@ -214,45 +255,45 @@ button{font-family:inherit; font-size:inherit; cursor:pointer}
 }
 </style>
 </head>
-<body hx-ext="sse" sse-connect="/events"
+<body hx-ext="sse" sse-connect="/events?s={{SID}}"
       hx-on::sse-message="document.getElementById('empty')?.remove();document.getElementById('rail-empty')?.remove()">
 
 <div class="shell">
   <header class="top">
     <div class="brand"><span class="dot"></span><b>Console</b></div>
-    <div class="where">{{ROOT}}</div>
+    <div class="where">{{ROOT}}</div>{{BADGE}}
     <div class="spacer"></div>
     <div class="meter" id="meter" sse-swap="meter" hx-swap="innerHTML">{{METER}}</div>
-    <button class="stop" id="stop" hx-post="/interrupt" hx-swap="none" title="Stop the current turn">Stop</button>
+    <button class="stop" id="stop" hx-post="/s/{{SID}}/interrupt" hx-swap="none" title="Stop the current turn">Stop</button>
   </header>
 
   <div class="panes">
     <aside class="side">
+      <section class="work">
+        <div class="head">
+          <h2 class="label">Sessions</h2>
+          <button class="newbtn" onclick="document.getElementById('newdlg').showModal()" title="New session">+</button>
+        </div>
+        <div class="slist">{{SESSIONS}}</div>
+      </section>
       <section>
         <h2 class="label">Activity</h2>
         <span class="label" id="rail-empty" style="color:#aab3c0">Idle</span>
-        <div class="rail" id="rail" sse-swap="rail" hx-swap="beforeend scroll:bottom"></div>
+        <div class="rail" id="rail" sse-swap="rail" hx-swap="beforeend scroll:bottom">{{RAIL}}</div>
       </section>
       <section class="todos">
         <h2 class="label">Tasks</h2>
-        <div id="todos" sse-swap="todos" hx-swap="innerHTML"><span class="label" style="color:#aab3c0">None yet</span></div>
+        <div id="todos" sse-swap="todos" hx-swap="innerHTML">{{TODOS}}</div>
       </section>
     </aside>
 
     <main class="main">
       <div class="scroll" id="scroll">
-        <div class="stream" id="stream" sse-swap="msg" hx-swap="beforeend scroll:#scroll:bottom transition:true">
-          <div class="empty" id="empty">
-            <h1>{{TITLE}}</h1>
-            <span class="label sub">{{FILES}} files &middot; 6 tools &middot; no built-ins</span>
-            <p>Nothing yet.</p>
-            <p>Ask for something, or tell it what is broken.</p>
-            <div class="seeds">{{SEEDS}}</div>
-          </div>
+        <div class="stream" id="stream" sse-swap="msg" hx-swap="beforeend scroll:#scroll:bottom transition:true">{{STREAM}}
         </div>
       </div>
 
-      <form class="composer" hx-post="/prompt" hx-swap="none"
+      <form class="composer" hx-post="/s/{{SID}}/prompt" hx-swap="none"
             hx-disabled-elt="find button[type=submit]"
             hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
         <div class="inner">
@@ -268,6 +309,30 @@ button{font-family:inherit; font-size:inherit; cursor:pointer}
   </div>
 </div>
 
+
+<dialog id="newdlg">
+  <form method="post" action="/sessions">
+    <h3>New session</h3>
+    <p class="why">Its own claude process, its own transcript.</p>
+    <div class="field">
+      <label class="label" for="ws">Project</label>
+      <select name="workspace" id="ws">{{WSOPTIONS}}</select>
+    </div>
+    <div class="field">
+      <label class="label" for="first">First message</label>
+      <textarea name="prompt" id="first" placeholder="What should it start on?" required></textarea>
+    </div>
+    <label class="check">
+      <input type="checkbox" name="worktree" value="1">
+      <span><b>Work in a git worktree</b>
+      Branches off HEAD into .worktrees, so this session cannot tread on anything else.</span>
+    </label>
+    <div class="actions">
+      <button type="button" class="ghost" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="send">Start</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 document.getElementById('prompt').addEventListener('keydown', ev => {
@@ -309,11 +374,11 @@ func compact(n int) string {
 	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }
 
-func modesHTML(mode string) string {
+func modesHTML(sid, mode string) string {
 	btn := func(id, text, help string) string {
 		return fmt.Sprintf(
-			`<button type="button" aria-pressed="%t" title="%s" hx-post="/mode?m=%s" hx-swap="none">%s</button>`,
-			mode == id, help, id, text)
+			`<button type="button" aria-pressed="%t" title="%s" hx-post="/s/%s/mode?m=%s" hx-swap="none">%s</button>`,
+			mode == id, help, sid, id, text)
 	}
 	return btn("plan", "Plan", "Read and think. Edits are refused.") +
 		btn("act", "Act", "Free to change files.")
@@ -337,30 +402,12 @@ func toolHTML(id, name, args string) string {
 		id, esc(name), esc(args), tallySlot(id))
 }
 
-// diffHTML renders a patch inside an existing tool card.
+// diffHTML puts a patch into a card that is already on the page.
 func diffHTML(cardID string, hunks []hunk) string {
 	added, removed := countChanges(hunks)
-
-	var b strings.Builder
-	fmt.Fprintf(&b, `<div id="%s" hx-swap-oob="beforeend"><div class="diff">`, cardID)
-	for _, h := range hunks {
-		if h.Kind == "gap" {
-			b.WriteString(`<div class="gap">&middot;&middot;&middot;</div>`)
-			continue
-		}
-		n := h.New
-		if h.Kind == "del" {
-			n = h.Old
-		}
-		fmt.Fprintf(&b, `<div class="row %s"><span class="n">%d</span><span class="t">%s</span></div>`,
-			h.Kind, n, esc(h.Text))
-	}
-	b.WriteString(`</div></div>`)
-
-	// The tally lives in the card header, so it is swapped separately.
-	fmt.Fprintf(&b, `<span id="%s-tally" class="tally" hx-swap-oob="true">`+
-		`<span class="a">+%d</span> <span class="d">-%d</span></span>`, cardID, added, removed)
-	return b.String()
+	return fmt.Sprintf(`<div id="%s" hx-swap-oob="beforeend">%s</div>`, cardID, diffRows(hunks)) +
+		fmt.Sprintf(`<span id="%s-tally" class="tally" hx-swap-oob="true">`+
+			`<span class="a">+%d</span> <span class="d">-%d</span></span>`, cardID, added, removed)
 }
 
 // tallySlot is the placeholder a card carries so a diff can fill it in later.
@@ -482,19 +529,170 @@ func inlineCode(s string) string {
 	return b.String()
 }
 
-func renderPage(title, root, meter, modes string, files int, seeds []string) string {
-	var b strings.Builder
-	for _, seed := range seeds {
-		fmt.Fprintf(&b,
+// pageData is everything the shell needs to render.
+type pageData struct {
+	Title    string
+	Root     string
+	Badge    string
+	Meter    string
+	Modes    string
+	Files    int
+	Seeds    []string
+	Sessions string
+	Options  string
+	Stream   string
+	Rail     string
+	Todos    string
+	SID      string
+}
+
+func renderPage(d pageData) string {
+	var seeds strings.Builder
+	for _, seed := range d.Seeds {
+		fmt.Fprintf(&seeds,
 			`<button type="button" class="seed" onclick="const t=document.getElementById('prompt');t.value=this.textContent;t.focus()">%s</button>`,
 			esc(seed))
 	}
+
+	stream := d.Stream
+	if stream == "" {
+		stream = `<div class="empty" id="empty">` +
+			fmt.Sprintf(`<h1>%s</h1><span class="label sub">%d files &middot; 6 tools &middot; no built-ins</span>`, esc(d.Title), d.Files) +
+			`<p>Nothing yet.</p><p>Ask for something, or tell it what is broken.</p>` +
+			`<div class="seeds">` + seeds.String() + `</div></div>`
+	}
+
+	todos := d.Todos
+	if todos == "" {
+		todos = `<span class="label" style="color:#aab3c0">None yet</span>`
+	}
+
 	return strings.NewReplacer(
-		"{{TITLE}}", esc(title),
-		"{{ROOT}}", esc(root),
-		"{{METER}}", meter,
-		"{{MODES}}", modes,
-		"{{FILES}}", fmt.Sprintf("%d", files),
-		"{{SEEDS}}", b.String(),
+		"{{TITLE}}", esc(d.Title),
+		"{{ROOT}}", esc(d.Root),
+		"{{BADGE}}", d.Badge,
+		"{{METER}}", d.Meter,
+		"{{MODES}}", d.Modes,
+		"{{SESSIONS}}", d.Sessions,
+		"{{WSOPTIONS}}", d.Options,
+		"{{STREAM}}", stream,
+		"{{RAIL}}", d.Rail,
+		"{{TODOS}}", todos,
+		"{{SID}}", esc(d.SID),
 	).Replace(page)
+}
+
+// renderEntry turns one recorded event into its finished markup. Streaming and
+// replay both go through here, so a reloaded page cannot drift from a live one.
+func renderEntry(e *entry) string {
+	switch e.Kind {
+	case "user":
+		return userHTML(e.Text)
+	case "agent":
+		return agentHTML(e.Text)
+	case "think":
+		return thinkHTML(e.Text)
+	case "deny":
+		return fmt.Sprintf(
+			`<div class="tool deny"><header><span class="name">%s</span></header><div class="note">%s</div></div>`,
+			esc(e.Name), esc(e.Text))
+	case "error":
+		return fmt.Sprintf(
+			`<div class="tool err"><header><span class="name">%s</span></header><div class="note">%s</div></div>`,
+			esc(e.Name), esc(e.Text))
+	}
+
+	class := "tool"
+	if e.Settled == "deny" {
+		class = "tool deny"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, `<div class="%s" id="%s"><header><span class="name">%s</span><span class="args">%s</span>`,
+		class, esc(e.ID), esc(e.Name), esc(e.Arg))
+
+	if len(e.Hunks) > 0 {
+		added, removed := countChanges(e.Hunks)
+		fmt.Fprintf(&b, `<span id="%s-tally" class="tally"><span class="a">+%d</span> <span class="d">-%d</span></span>`,
+			esc(e.ID), added, removed)
+	} else {
+		b.WriteString(tallySlot(e.ID))
+	}
+	b.WriteString(`</header>`)
+
+	if e.Note != "" {
+		fmt.Fprintf(&b, `<div class="note">%s</div>`, esc(e.Note))
+	}
+	if len(e.Hunks) > 0 {
+		b.WriteString(diffRows(e.Hunks))
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// diffRows is the diff body, shared by the live fragment and the replay.
+func diffRows(hunks []hunk) string {
+	var b strings.Builder
+	b.WriteString(`<div class="diff">`)
+	for _, h := range hunks {
+		if h.Kind == "gap" {
+			b.WriteString(`<div class="gap">&middot;&middot;&middot;</div>`)
+			continue
+		}
+		n := h.New
+		if h.Kind == "del" {
+			n = h.Old
+		}
+		fmt.Fprintf(&b, `<div class="row %s"><span class="n">%d</span><span class="t">%s</span></div>`,
+			h.Kind, n, esc(h.Text))
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+func stopHTML(live bool) string {
+	return fmt.Sprintf(
+		`<button class="stop" id="stop" data-live="%d" hx-post="/s/{{SID}}/interrupt" hx-swap="none" hx-swap-oob="true">Stop</button>`,
+		btoi(live))
+}
+
+func sessionsHTML(sessions []*Session, workspaces map[string]*Workspace, current string) string {
+	if len(sessions) == 0 {
+		return `<span class="label" style="color:#aab3c0">None yet</span>`
+	}
+	var b strings.Builder
+	for _, s := range sessions {
+		title := s.Title
+		if title == "" {
+			title = "Untitled"
+		}
+		mark := ""
+		if s.Worktree {
+			mark = ` <span class="wt">&#9282;</span>`
+		}
+		name := ""
+		if w := workspaces[s.WorkspaceID]; w != nil {
+			name = w.Name
+		}
+		fmt.Fprintf(&b,
+			`<a class="srow" href="/s/%s" aria-current="%t"><span class="t">%s</span><span class="m">%s &middot; %s%s</span></a>`,
+			esc(s.ID), s.ID == current, esc(title), esc(name), stamp(s.Created), mark)
+	}
+	return b.String()
+}
+
+func optionsHTML(workspaces []*Workspace, current string) string {
+	var b strings.Builder
+	for _, w := range workspaces {
+		fmt.Fprintf(&b, `<option value="%s"%s>%s</option>`,
+			esc(w.ID), map[bool]string{true: " selected"}[w.ID == current], esc(w.Root))
+	}
+	return b.String()
+}
+
+func badgeHTML(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	return fmt.Sprintf(`<span class="badge">&#9282; %s</span>`, esc(branch))
 }
