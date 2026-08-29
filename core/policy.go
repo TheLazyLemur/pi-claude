@@ -1,10 +1,10 @@
-package pi
+package core
 
-import "context"
+import (
+	"context"
 
-// toolServerName is the SDK MCP server your tools are registered under. It is
-// an implementation detail: tools are reported to you by their bare names.
-const toolServerName = "pi"
+	"github.com/TheLazyLemur/pi-claude/internal/jsonschema"
+)
 
 // NoTools drops tools wholesale, for sessions that should reach only the tools
 // you supply.
@@ -108,7 +108,7 @@ type Agent struct {
 //	opts.OutputSchema = pi.SchemaFor[verdict]()
 func SchemaFor[T any]() map[string]any {
 	var zero T
-	return schemaOf(zero)
+	return jsonschema.Of(zero)
 }
 
 // Options configures a session. The zero value is usable: it starts the CLI

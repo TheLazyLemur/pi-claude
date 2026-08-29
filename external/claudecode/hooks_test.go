@@ -1,22 +1,24 @@
-package pi
+package claudecode
 
 import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/TheLazyLemur/pi-claude/core"
 )
 
 func TestSession_InitRequestCarriesHooks(t *testing.T) {
 	// given
 	// ... a session with a PreToolUse hook scoped to a matcher
 	f := newFake()
-	sess := newTestSession(t, f, Options{
-		Hooks: map[HookEvent][]HookMatcher{
-			HookPreToolUse: {{
+	sess := newTestSession(t, f, core.Options{
+		Hooks: map[core.HookEvent][]core.HookMatcher{
+			core.HookPreToolUse: {{
 				Matcher: "Bash",
 				Timeout: 15,
-				Hooks: []HookFunc{func(context.Context, HookInput) (HookOutput, error) {
-					return HookContinue(), nil
+				Hooks: []core.HookFunc{func(context.Context, core.HookInput) (core.HookOutput, error) {
+					return core.HookContinue(), nil
 				}},
 			}},
 		},
@@ -51,15 +53,15 @@ func TestSession_HookCallbackRuns(t *testing.T) {
 	// ... a hook that records what it saw and adds context
 	f := newFake()
 	var mu sync.Mutex
-	var seen HookInput
-	sess := newTestSession(t, f, Options{
-		Hooks: map[HookEvent][]HookMatcher{
-			HookPreToolUse: {{Hooks: []HookFunc{
-				func(_ context.Context, in HookInput) (HookOutput, error) {
+	var seen core.HookInput
+	sess := newTestSession(t, f, core.Options{
+		Hooks: map[core.HookEvent][]core.HookMatcher{
+			core.HookPreToolUse: {{Hooks: []core.HookFunc{
+				func(_ context.Context, in core.HookInput) (core.HookOutput, error) {
 					mu.Lock()
 					seen = in
 					mu.Unlock()
-					out := HookContinue()
+					out := core.HookContinue()
 					out.AdditionalContext = "prefer the existing helper"
 					return out, nil
 				},
@@ -71,7 +73,7 @@ func TestSession_HookCallbackRuns(t *testing.T) {
 	// ... the CLI fires the hook
 	go func() {
 		f.awaitWrites(t, 2)
-		callbackID := hookCallbackID(HookPreToolUse, 0, 0)
+		callbackID := core.HookCallbackID(core.HookPreToolUse, 0, 0)
 		f.push(t, map[string]any{
 			"type": "control_request", "request_id": "h1",
 			"request": map[string]any{
@@ -94,7 +96,7 @@ func TestSession_HookCallbackRuns(t *testing.T) {
 	// ... the hook saw a typed input and its output reached the CLI
 	mu.Lock()
 	defer mu.Unlock()
-	if seen.Event != HookPreToolUse || seen.ToolName != "Bash" {
+	if seen.Event != core.HookPreToolUse || seen.ToolName != "Bash" {
 		t.Fatalf("hook input = %+v", seen)
 	}
 	if seen.ToolInput["command"] != "ls" {
@@ -121,11 +123,11 @@ func TestSession_HookCanBlockAToolCall(t *testing.T) {
 	// given
 	// ... a hook that refuses the call
 	f := newFake()
-	sess := newTestSession(t, f, Options{
-		Hooks: map[HookEvent][]HookMatcher{
-			HookPreToolUse: {{Hooks: []HookFunc{
-				func(context.Context, HookInput) (HookOutput, error) {
-					return HookDeny("no shelling out"), nil
+	sess := newTestSession(t, f, core.Options{
+		Hooks: map[core.HookEvent][]core.HookMatcher{
+			core.HookPreToolUse: {{Hooks: []core.HookFunc{
+				func(context.Context, core.HookInput) (core.HookOutput, error) {
+					return core.HookDeny("no shelling out"), nil
 				},
 			}}},
 		},
@@ -138,7 +140,7 @@ func TestSession_HookCanBlockAToolCall(t *testing.T) {
 		f.push(t, map[string]any{
 			"type": "control_request", "request_id": "h2",
 			"request": map[string]any{
-				"subtype": "hook_callback", "callback_id": hookCallbackID(HookPreToolUse, 0, 0),
+				"subtype": "hook_callback", "callback_id": core.HookCallbackID(core.HookPreToolUse, 0, 0),
 				"input": map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Bash"},
 			},
 		})
@@ -169,7 +171,7 @@ func TestSession_UnknownHookCallbackIsAnError(t *testing.T) {
 	// given
 	// ... a session with no hooks registered
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... the CLI fires a callback that does not exist

@@ -1,9 +1,11 @@
-package pi
+package claudecode
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/TheLazyLemur/pi-claude/core"
 )
 
 // replyTo answers the most recent control_request of the given subtype.
@@ -40,7 +42,7 @@ func TestSession_MCPStatusReturnsTheResponse(t *testing.T) {
 	// given
 	// ... a session and a CLI that will report its MCP servers
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	_, conv := openOver(t, f, core.Options{})
 
 	go replyTo(t, f, "mcp_status", map[string]any{
 		"servers": []any{map[string]any{"name": "fs", "status": "connected"}},
@@ -48,7 +50,7 @@ func TestSession_MCPStatusReturnsTheResponse(t *testing.T) {
 
 	// when
 	// ... status is requested
-	status, err := sess.MCPStatus(context.Background())
+	status, err := conv.MCPStatus(context.Background())
 
 	// then
 	// ... the decoded response comes back to the caller
@@ -65,13 +67,13 @@ func TestSession_RewindFilesReturnsWhatWouldChange(t *testing.T) {
 	// given
 	// ... a session with checkpointing on
 	f := newFake()
-	sess := newTestSession(t, f, Options{EnableFileCheckpointing: true})
+	_, conv := openOver(t, f, core.Options{EnableFileCheckpointing: true})
 
 	go replyTo(t, f, "rewind_files", map[string]any{"files": []any{"main.go"}})
 
 	// when
 	// ... a dry-run rewind is requested
-	result, err := sess.RewindFiles(context.Background(), "msg-1", true)
+	result, err := conv.RewindFiles(context.Background(), "msg-1", true)
 
 	// then
 	// ... the CLI's answer reaches the caller
@@ -99,7 +101,7 @@ func TestSession_ControlErrorIsReturned(t *testing.T) {
 	// given
 	// ... a CLI that rejects the request
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	_, conv := openOver(t, f, core.Options{})
 
 	go func() {
 		deadline := time.After(2 * time.Second)
@@ -126,7 +128,7 @@ func TestSession_ControlErrorIsReturned(t *testing.T) {
 
 	// when
 	// ... a control request is made
-	_, err := sess.MCPStatus(context.Background())
+	_, err := conv.MCPStatus(context.Background())
 
 	// then
 	// ... the CLI's error reaches the caller rather than a timeout
@@ -139,12 +141,12 @@ func TestSession_SetMaxThinkingTokens(t *testing.T) {
 	// given
 	// ... an open session
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	_, conv := openOver(t, f, core.Options{})
 
 	// when
 	// ... a thinking budget is set and then cleared
-	sess.SetMaxThinkingTokens(2048)
-	sess.SetMaxThinkingTokens(0)
+	conv.SetMaxThinkingTokens(2048)
+	conv.SetMaxThinkingTokens(0)
 	f.awaitWrites(t, 2)
 
 	// then
@@ -164,12 +166,12 @@ func TestSession_ControlRequestOnClosedSessionFails(t *testing.T) {
 	// given
 	// ... a closed session
 	f := newFake()
-	sess := newSession(context.Background(), f, Options{})
+	sess, conv := openOver(t, f, core.Options{})
 	sess.Close()
 
 	// when
 	// ... a control request is attempted
-	_, err := sess.MCPStatus(context.Background())
+	_, err := conv.MCPStatus(context.Background())
 
 	// then
 	// ... it fails immediately rather than waiting for a reply that cannot come
@@ -182,12 +184,12 @@ func TestSession_ToolRequestCarriesTheCLIsReasoning(t *testing.T) {
 	// given
 	// ... an approver that inspects why it is being asked
 	f := newFake()
-	var seen ToolRequest
-	sess := newTestSession(t, f, Options{
-		PermissionMode: PermissionModeDefault,
-		ApproveTool: func(_ context.Context, req ToolRequest) Decision {
+	var seen core.ToolRequest
+	sess := newTestSession(t, f, core.Options{
+		PermissionMode: core.PermissionModeDefault,
+		ApproveTool: func(_ context.Context, req core.ToolRequest) core.Decision {
 			seen = req
-			return Allow()
+			return core.Allow()
 		},
 	})
 

@@ -1,4 +1,4 @@
-package pi
+package jsonschema
 
 import (
 	"testing"
@@ -21,14 +21,14 @@ type regionParams struct {
 	End   int `json:"end" desc:"Last line"`
 }
 
-func TestSchemaOf_Fields(t *testing.T) {
+func TestOf_Fields(t *testing.T) {
 	// given
 	// ... a params struct with a described string and an optional int
 	var p simpleParams
 
 	// when
 	// ... a JSON Schema is derived from it
-	got := schemaOf(p)
+	got := Of(p)
 
 	// then
 	// ... both fields are typed and the description is carried over
@@ -45,14 +45,14 @@ func TestSchemaOf_Fields(t *testing.T) {
 	}
 }
 
-func TestSchemaOf_RequiredOmitsOptional(t *testing.T) {
+func TestOf_RequiredOmitsOptional(t *testing.T) {
 	// given
 	// ... a struct where one field is omitempty
 	var p simpleParams
 
 	// when
 	// ... a schema is derived
-	got := schemaOf(p)
+	got := Of(p)
 
 	// then
 	// ... only the non-omitempty field is required
@@ -62,14 +62,14 @@ func TestSchemaOf_RequiredOmitsOptional(t *testing.T) {
 	}
 }
 
-func TestSchemaOf_NestedSliceAndPointer(t *testing.T) {
+func TestOf_NestedSliceAndPointer(t *testing.T) {
 	// given
 	// ... a struct with a nested struct, a slice, a pointer and a skipped field
 	var p nestedParams
 
 	// when
 	// ... a schema is derived
-	got := schemaOf(p)
+	got := Of(p)
 
 	// then
 	// ... each shape maps to the right JSON Schema node and json:"-" is dropped
@@ -104,14 +104,14 @@ func TestSchemaOf_NestedSliceAndPointer(t *testing.T) {
 	}
 }
 
-func TestSchemaOf_NoParams(t *testing.T) {
+func TestOf_NoParams(t *testing.T) {
 	// given
 	// ... a tool that takes no parameters
 	var p NoParams
 
 	// when
 	// ... a schema is derived
-	got := schemaOf(p)
+	got := Of(p)
 
 	// then
 	// ... it is a valid empty object schema, not nil

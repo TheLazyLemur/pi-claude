@@ -1,4 +1,4 @@
-package pi
+package jsonschema
 
 import (
 	"reflect"
@@ -10,13 +10,13 @@ import (
 //	pi.DefineTool[pi.NoParams]("get_time", "Get the current time", ...)
 type NoParams struct{}
 
-// schemaOf derives a JSON Schema object from a Go struct, so a tool's
+// Of derives a JSON Schema object from a Go struct, so a tool's
 // parameters are declared once, in Go, instead of twice.
 //
 // Field names come from the json tag, descriptions from a desc tag. A field is
 // required unless it is a pointer or carries omitempty. Fields tagged json:"-"
 // and unexported fields are skipped.
-func schemaOf(v any) map[string]any {
+func Of(v any) map[string]any {
 	return objectSchema(reflect.TypeOf(v))
 }
 

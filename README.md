@@ -400,15 +400,56 @@ Changing it mid-session:
 
 ## What it does not do
 
-No connection pool. One session is one subprocess and one prompt at a time. If
-you want a fleet, that is your code, and it is not much code.
+No connection pool. One session is one backend conversation and one prompt at a
+time. If you want a fleet, that is your code, and it is not much code.
 
 No retries. `RateLimitEvent` tells you where you stand, but nothing acts on it.
 
 No transcript store. `Resume` takes a session id, and remembering which id goes
 with which piece of work is your job.
 
-## Examples
+## Layout
+
+```
+pi.go                    the front door: one import, the whole API
+core/                    the domain, and the port a backend plugs into
+external/claudecode/     the Claude Code CLI: flags, control protocol, MCP shape
+external/scripted/       a backend with no process, for tests and proof
+internal/proto/          JSON over stdio, reusable by any CLI backend
+internal/jsonschema/     Go struct to JSON Schema
+```
+
+`core` knows nothing about Claude Code. The seam is two small interfaces:
+
+```go
+type Backend interface {
+    Open(ctx context.Context, cfg Config, rt Runtime) (Conversation, error)
+}
+
+type Conversation interface {
+    Prompt(ctx context.Context, text string) (Turn, error)
+    Interrupt() error
+    Close() error
+}
+```
+
+A backend gets everything it needs from the host through `core.Runtime`:
+`Tools`, `CallTool`, `Approve`, `Hooks`, `RunHook`, `Emit`. It is deliberately
+domain-shaped, with no JSON-RPC and no wire formats, so a second backend does
+not have to pretend to understand Claude Code's.
+
+`external/scripted` is that proof. It spawns nothing, speaks no protocol, and
+runs the host's tools and permission policy through the same interfaces. A
+backend driving a model API directly would be shaped the same way: the loop
+lives in the backend, the tools stay with the host.
+
+```go
+sess, _ := pi.Open(ctx, myBackend, pi.Options{CustomTools: tools})
+```
+
+`pi.New` is the same call with the Claude Code backend already chosen.
+
+## Examples## Examples
 
 - `examples/webharness`: browser UI over htmx and SSE, with projects, sessions, worktrees and a shell
 - `examples/harness`: a working coding agent, five custom tools, no built-ins, stdin REPL

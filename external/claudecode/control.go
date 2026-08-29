@@ -1,15 +1,16 @@
-package pi
+package claudecode
 
 import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/TheLazyLemur/pi-claude/core"
 	"github.com/TheLazyLemur/pi-claude/internal/proto"
 )
 
 // onControlRequest answers the requests the CLI sends back to us: permission
 // checks and calls into the tools we registered.
-func (s *Session) onControlRequest(frame proto.Frame) {
+func (c *Conversation) onControlRequest(frame proto.Frame) {
 	var req struct {
 		RequestID string `json:"request_id"`
 		Request   struct {
@@ -32,31 +33,28 @@ func (s *Session) onControlRequest(frame proto.Frame) {
 
 	switch req.Request.Subtype {
 	case "can_use_tool":
-		s.answerPermission(req.RequestID, ToolRequest{
-			Name:           s.tools.bare(req.Request.ToolName),
+		c.answerPermission(req.RequestID, core.ToolRequest{
+			Name:           c.tools.bare(req.Request.ToolName),
 			Qualified:      req.Request.ToolName,
 			Input:          req.Request.Input,
 			ID:             req.Request.ToolUseID,
-			Mine:           s.tools.owns(req.Request.ToolName),
+			Mine:           c.tools.owns(req.Request.ToolName),
 			AgentID:        req.Request.AgentID,
 			BlockedPath:    req.Request.BlockedPath,
 			DecisionReason: req.Request.DecisionReason,
 			Suggestions:    req.Request.Suggestions,
 		})
 	case "mcp_message":
-		s.answerMCP(req.RequestID, req.Request.ServerName, req.Request.Message)
+		c.answerMCP(req.RequestID, req.Request.ServerName, req.Request.Message)
 	case "hook_callback":
-		s.answerHook(req.RequestID, req.Request.CallbackID, req.Request.Input)
+		c.answerHook(req.RequestID, req.Request.CallbackID, req.Request.Input)
 	case "initialize":
-		s.respond(req.RequestID, map[string]any{})
+		c.respond(req.RequestID, map[string]any{})
 	}
 }
 
-func (s *Session) answerPermission(requestID string, req ToolRequest) {
-	decision := Allow()
-	if s.opts.ApproveTool != nil {
-		decision = s.opts.ApproveTool(s.ctx, req)
-	}
+func (c *Conversation) answerPermission(requestID string, req core.ToolRequest) {
+	decision := c.rt.Approve(c.ctx, req)
 
 	body := map[string]any{
 		"behavior":  decision.Behavior,
@@ -70,8 +68,8 @@ func (s *Session) answerPermission(requestID string, req ToolRequest) {
 		if decision.Interrupt {
 			body["interrupt"] = true
 		}
-		s.emit(DeniedEvent{Name: req.Name, Reason: decision.Reason})
-		s.respond(requestID, body)
+		c.rt.Emit(core.DeniedEvent{Name: req.Name, Reason: decision.Reason})
+		c.respond(requestID, body)
 		return
 	}
 
@@ -82,22 +80,22 @@ func (s *Session) answerPermission(requestID string, req ToolRequest) {
 		input = map[string]any{}
 	}
 	body["updatedInput"] = input
-	s.respond(requestID, body)
+	c.respond(requestID, body)
 }
 
-func (s *Session) answerMCP(requestID, serverName string, msg map[string]any) {
+func (c *Conversation) answerMCP(requestID, serverName string, msg map[string]any) {
 	id := msg["id"]
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]any)
 
-	if serverName != s.tools.server {
-		s.respondError(requestID, "unknown MCP server: "+serverName)
+	if serverName != c.tools.server {
+		c.respondError(requestID, "unknown MCP server: "+serverName)
 		return
 	}
 
-	result, err := s.tools.dispatch(s.ctx, method, params)
+	result, err := c.tools.dispatch(c.ctx, method, params)
 	if err != nil {
-		s.respond(requestID, map[string]any{
+		c.respond(requestID, map[string]any{
 			"mcp_response": map[string]any{
 				"jsonrpc": "2.0",
 				"id":      id,
@@ -107,7 +105,7 @@ func (s *Session) answerMCP(requestID, serverName string, msg map[string]any) {
 		return
 	}
 
-	s.respond(requestID, map[string]any{
+	c.respond(requestID, map[string]any{
 		"mcp_response": map[string]any{
 			"jsonrpc": "2.0",
 			"id":      id,
@@ -116,8 +114,8 @@ func (s *Session) answerMCP(requestID, serverName string, msg map[string]any) {
 	})
 }
 
-func (s *Session) respond(requestID string, body map[string]any) {
-	s.write(map[string]any{
+func (c *Conversation) respond(requestID string, body map[string]any) {
+	c.write(map[string]any{
 		"type": "control_response",
 		"response": map[string]any{
 			"subtype":    "success",
@@ -127,8 +125,8 @@ func (s *Session) respond(requestID string, body map[string]any) {
 	})
 }
 
-func (s *Session) respondError(requestID, msg string) {
-	s.write(map[string]any{
+func (c *Conversation) respondError(requestID, msg string) {
+	c.write(map[string]any{
 		"type": "control_response",
 		"response": map[string]any{
 			"subtype":    "error",
@@ -139,7 +137,7 @@ func (s *Session) respondError(requestID, msg string) {
 }
 
 // onControlResponse hands the CLI's reply to whichever request is waiting.
-func (s *Session) onControlResponse(frame proto.Frame) {
+func (c *Conversation) onControlResponse(frame proto.Frame) {
 	var msg struct {
 		Response struct {
 			Subtype   string         `json:"subtype"`
@@ -152,9 +150,9 @@ func (s *Session) onControlResponse(frame proto.Frame) {
 		return
 	}
 
-	s.mu.Lock()
-	reply, waiting := s.awaiting[msg.Response.RequestID]
-	s.mu.Unlock()
+	c.mu.Lock()
+	reply, waiting := c.awaiting[msg.Response.RequestID]
+	c.mu.Unlock()
 	if !waiting {
 		return
 	}

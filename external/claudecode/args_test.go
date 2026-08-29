@@ -1,9 +1,11 @@
-package pi
+package claudecode
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/TheLazyLemur/pi-claude/core"
 )
 
 func argValue(args []string, flag string) (string, bool) {
@@ -23,7 +25,7 @@ func TestBuildArgs_ExplicitDefaultPermissionModeIsSent(t *testing.T) {
 	// given
 	// ... a caller explicitly asking for the default permission mode, because
 	// ... the machine's own config may be set to auto-approve
-	opts := Options{PermissionMode: PermissionModeDefault}
+	opts := core.Options{PermissionMode: core.PermissionModeDefault}
 
 	// when
 	// ... the CLI args are built
@@ -40,7 +42,7 @@ func TestBuildArgs_ExplicitDefaultPermissionModeIsSent(t *testing.T) {
 func TestBuildArgs_UnsetPermissionModeIsLeftAlone(t *testing.T) {
 	// given
 	// ... options that say nothing about permissions
-	opts := Options{}
+	opts := core.Options{}
 
 	// when
 	// ... the CLI args are built
@@ -56,7 +58,7 @@ func TestBuildArgs_UnsetPermissionModeIsLeftAlone(t *testing.T) {
 func TestBuildArgs_NoToolsAll(t *testing.T) {
 	// given
 	// ... a session that must offer no tools but its own
-	opts := Options{NoTools: NoToolsAll}
+	opts := core.Options{NoTools: core.NoToolsAll}
 
 	// when
 	// ... the CLI args are built
@@ -82,7 +84,7 @@ func TestBuildArgs_NoToolsAll(t *testing.T) {
 func TestBuildArgs_NoToolsBuiltinKeepsMCPServers(t *testing.T) {
 	// given
 	// ... a session dropping built-ins but keeping configured MCP servers
-	opts := Options{NoTools: NoToolsBuiltin}
+	opts := core.Options{NoTools: core.NoToolsBuiltin}
 
 	// when
 	// ... the CLI args are built
@@ -92,7 +94,7 @@ func TestBuildArgs_NoToolsBuiltinKeepsMCPServers(t *testing.T) {
 	// ... only the built-in set is removed
 	for _, a := range args {
 		if a == "--strict-mcp-config" {
-			t.Fatal("--strict-mcp-config should not be set for NoToolsBuiltin")
+			t.Fatal("--strict-mcp-config should not be set for core.NoToolsBuiltin")
 		}
 	}
 }
@@ -100,7 +102,7 @@ func TestBuildArgs_NoToolsBuiltinKeepsMCPServers(t *testing.T) {
 func TestBuildArgs_ToolsAllowlistIsCommaSeparated(t *testing.T) {
 	// given
 	// ... a session restricted to two built-in tools
-	opts := Options{Tools: []string{"Read", "Grep"}}
+	opts := core.Options{Tools: []string{"Read", "Grep"}}
 
 	// when
 	// ... the CLI args are built
@@ -117,7 +119,7 @@ func TestBuildArgs_ToolsAllowlistIsCommaSeparated(t *testing.T) {
 func TestBuildArgs_NoToolsBeatsAllowlist(t *testing.T) {
 	// given
 	// ... an allowlist alongside an instruction to drop every tool
-	opts := Options{Tools: []string{"Read"}, NoTools: NoToolsAll}
+	opts := core.Options{Tools: []string{"Read"}, NoTools: core.NoToolsAll}
 
 	// when
 	// ... the CLI args are built
@@ -143,7 +145,7 @@ func TestBuildArgs_NoToolsBeatsAllowlist(t *testing.T) {
 func TestBuildArgs_SystemPrompts(t *testing.T) {
 	// given
 	// ... a replaced system prompt and an appended one
-	opts := Options{SystemPrompt: "you fill gaps", AppendSystemPrompt: "never change signatures"}
+	opts := core.Options{SystemPrompt: "you fill gaps", AppendSystemPrompt: "never change signatures"}
 
 	// when
 	// ... the CLI args are built
@@ -161,8 +163,8 @@ func TestBuildArgs_SystemPrompts(t *testing.T) {
 
 func TestBuildArgs_ZeroValueAddsNothing(t *testing.T) {
 	// given
-	// ... the zero Options
-	opts := Options{}
+	// ... the zero core.Options
+	opts := core.Options{}
 
 	// when
 	// ... the CLI args are built
@@ -205,7 +207,7 @@ func argValues(args []string, flag string) []string {
 func TestBuildArgs_StreamingAndDirectories(t *testing.T) {
 	// given
 	// ... a session that streams deltas and may read two extra directories
-	opts := Options{
+	opts := core.Options{
 		IncludePartialMessages: true,
 		AdditionalDirectories:  []string{"/tmp/a", "/tmp/b"},
 	}
@@ -228,7 +230,7 @@ func TestBuildArgs_StreamingAndDirectories(t *testing.T) {
 func TestBuildArgs_ResumeAndPersistence(t *testing.T) {
 	// given
 	// ... a forked resume of an earlier session that must not be saved
-	opts := Options{
+	opts := core.Options{
 		Resume:               "sess-1",
 		ForkSession:          true,
 		ResumeSessionAt:      "msg-9",
@@ -255,7 +257,7 @@ func TestBuildArgs_ResumeAndPersistence(t *testing.T) {
 func TestBuildArgs_ModelFallbackBetasAndSettings(t *testing.T) {
 	// given
 	// ... a session with a fallback model, betas, and restricted setting sources
-	opts := Options{
+	opts := core.Options{
 		FallbackModel:  "sonnet",
 		Betas:          []string{"context-1m-2025-08-07"},
 		SettingSources: []string{"user", "project"},
@@ -284,7 +286,7 @@ func TestBuildArgs_StructuredOutputSchema(t *testing.T) {
 	type answer struct {
 		Verdict string `json:"verdict" desc:"pass or fail"`
 	}
-	opts := Options{OutputSchema: SchemaFor[answer]()}
+	opts := core.Options{OutputSchema: core.SchemaFor[answer]()}
 
 	// when
 	// ... the CLI args are built
@@ -308,7 +310,7 @@ func TestBuildArgs_StructuredOutputSchema(t *testing.T) {
 func TestBuildArgs_Agents(t *testing.T) {
 	// given
 	// ... a custom subagent definition
-	opts := Options{Agents: map[string]Agent{
+	opts := core.Options{Agents: map[string]core.Agent{
 		"reviewer": {Description: "Reviews code", Prompt: "You are a reviewer", Model: "sonnet"},
 	}}
 
@@ -334,7 +336,7 @@ func TestBuildArgs_Agents(t *testing.T) {
 func TestBuildArgs_MCPConfigAndStrict(t *testing.T) {
 	// given
 	// ... an explicit MCP config that should be the only one used
-	opts := Options{MCPConfig: []string{"/tmp/mcp.json"}, StrictMCPConfig: true}
+	opts := core.Options{MCPConfig: []string{"/tmp/mcp.json"}, StrictMCPConfig: true}
 
 	// when
 	// ... the CLI args are built
@@ -352,8 +354,8 @@ func TestBuildArgs_MCPConfigAndStrict(t *testing.T) {
 
 func TestBuildArgs_StrictMCPConfigNotDuplicated(t *testing.T) {
 	// given
-	// ... strict config requested directly and also implied by NoToolsAll
-	opts := Options{NoTools: NoToolsAll, StrictMCPConfig: true}
+	// ... strict config requested directly and also implied by core.NoToolsAll
+	opts := core.Options{NoTools: core.NoToolsAll, StrictMCPConfig: true}
 
 	// when
 	// ... the CLI args are built

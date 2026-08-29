@@ -1,4 +1,4 @@
-package pi
+package claudecode
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TheLazyLemur/pi-claude/core"
 	"github.com/TheLazyLemur/pi-claude/internal/proto"
 )
 
@@ -135,18 +136,57 @@ func successResult() map[string]any {
 	}
 }
 
-func newTestSession(t *testing.T, f *fakeTransport, opts Options) *Session {
+// backendFunc lets a test stand in as a backend without a process.
+type backendFunc func(context.Context, core.Config, core.Runtime) (core.Conversation, error)
+
+func (f backendFunc) Open(ctx context.Context, cfg core.Config, rt core.Runtime) (core.Conversation, error) {
+	return f(ctx, cfg, rt)
+}
+
+// newTestSession wires a real core.core session onto a fake transport, so the tests
+// exercise the port as well as the protocol.
+func newTestSession(t *testing.T, f *fakeTransport, opts core.Options) *core.Session {
 	t.Helper()
-	s := newSession(context.Background(), f, opts)
-	t.Cleanup(func() { s.Close() })
-	return s
+	sess, _ := openOver(t, f, opts)
+	return sess
+}
+
+// openOver also hands back the conversation, for the CLI-only methods.
+func openOver(t *testing.T, f *fakeTransport, opts core.Options) (*core.Session, *Conversation) {
+	t.Helper()
+
+	var conv *Conversation
+	backend := backendFunc(func(ctx context.Context, cfg core.Config, rt core.Runtime) (core.Conversation, error) {
+		conv = Start(ctx, f, cfg, rt)
+		return conv, nil
+	})
+
+	sess, err := core.Open(context.Background(), backend, opts, "pi")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess, conv
+}
+
+// runtimeWith is a minimal Runtime for tests that only need the tool list.
+func runtimeWith(tools ...core.Tool) core.Runtime {
+	sess, err := core.Open(context.Background(),
+		backendFunc(func(context.Context, core.Config, core.Runtime) (core.Conversation, error) {
+			return nil, nil
+		}),
+		core.Options{CustomTools: tools}, "pi")
+	if err != nil {
+		panic(err)
+	}
+	return sess
 }
 
 func TestSession_PromptSendsInitializeThenUserMessage(t *testing.T) {
 	// given
 	// ... a session with a fake CLI behind it
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... the first prompt is sent and the CLI answers
@@ -179,7 +219,7 @@ func TestSession_InitializeRegistersCustomTools(t *testing.T) {
 	// given
 	// ... a session carrying one custom tool
 	f := newFake()
-	sess := newTestSession(t, f, Options{CustomTools: []Tool{greetTool()}})
+	sess := newTestSession(t, f, core.Options{CustomTools: []core.Tool{greetTool()}})
 
 	// when
 	// ... the session initialises
@@ -193,7 +233,7 @@ func TestSession_InitializeRegistersCustomTools(t *testing.T) {
 	// ... the SDK MCP server is declared in the initialize request
 	init := f.sent(t)[0]["request"].(map[string]any)
 	servers := init["sdkMcpServers"].([]any)
-	if len(servers) != 1 || servers[0] != toolServerName {
+	if len(servers) != 1 || servers[0] != "pi" {
 		t.Fatalf("sdkMcpServers = %v", servers)
 	}
 }
@@ -202,7 +242,7 @@ func TestSession_PromptReturnsTurnFromResult(t *testing.T) {
 	// given
 	// ... a CLI that answers with text and then a result
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... a prompt runs to completion
@@ -233,21 +273,21 @@ func TestSession_SubscribeReceivesTextAndToolCalls(t *testing.T) {
 	// given
 	// ... a subscriber collecting events
 	f := newFake()
-	sess := newTestSession(t, f, Options{CustomTools: []Tool{greetTool()}})
+	sess := newTestSession(t, f, core.Options{CustomTools: []core.Tool{greetTool()}})
 
 	var mu sync.Mutex
 	var kinds []string
 	var toolName string
-	sess.Subscribe(func(ev Event) {
+	sess.Subscribe(func(ev core.Event) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch e := ev.(type) {
-		case TextEvent:
+		case core.TextEvent:
 			kinds = append(kinds, "text")
-		case ToolCallEvent:
+		case core.ToolCallEvent:
 			kinds = append(kinds, "tool")
 			toolName = e.Name
-		case TurnEvent:
+		case core.TurnEvent:
 			kinds = append(kinds, "turn")
 		}
 	})
@@ -278,11 +318,11 @@ func TestSession_UnsubscribeStopsDelivery(t *testing.T) {
 	// given
 	// ... a subscriber that immediately cancels
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	var mu sync.Mutex
 	count := 0
-	cancel := sess.Subscribe(func(Event) {
+	cancel := sess.Subscribe(func(core.Event) {
 		mu.Lock()
 		count++
 		mu.Unlock()
@@ -311,7 +351,7 @@ func TestSession_CustomToolIsExecuted(t *testing.T) {
 	// given
 	// ... a session exposing the greet tool
 	f := newFake()
-	sess := newTestSession(t, f, Options{CustomTools: []Tool{greetTool()}})
+	sess := newTestSession(t, f, core.Options{CustomTools: []core.Tool{greetTool()}})
 
 	// when
 	// ... the CLI asks the toolset to run it
@@ -322,7 +362,7 @@ func TestSession_CustomToolIsExecuted(t *testing.T) {
 			"request_id": "r1",
 			"request": map[string]any{
 				"subtype":     "mcp_message",
-				"server_name": toolServerName,
+				"server_name": "pi",
 				"message": map[string]any{
 					"jsonrpc": "2.0", "id": 7, "method": "tools/call",
 					"params": map[string]any{"name": "greet", "arguments": map[string]any{"name": "dan"}},
@@ -361,11 +401,11 @@ func TestSession_ApproveToolDeniesByBareName(t *testing.T) {
 	// ... an approver that refuses everything and records what it saw
 	f := newFake()
 	var seen string
-	sess := newTestSession(t, f, Options{
-		CustomTools: []Tool{greetTool()},
-		ApproveTool: func(_ context.Context, req ToolRequest) Decision {
+	sess := newTestSession(t, f, core.Options{
+		CustomTools: []core.Tool{greetTool()},
+		ApproveTool: func(_ context.Context, req core.ToolRequest) core.Decision {
 			seen = req.Name
-			return Deny("not today")
+			return core.Deny("not today")
 		},
 	})
 
@@ -407,7 +447,7 @@ func TestSession_ApproveToolDefaultsToAllow(t *testing.T) {
 	// given
 	// ... a session with no approver configured
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... the CLI asks permission
@@ -446,11 +486,11 @@ func TestSession_ReadyEventCarriesOfferedTools(t *testing.T) {
 	// given
 	// ... a subscriber watching for the init handshake
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess, conv := openOver(t, f, core.Options{})
 
-	ready := make(chan ReadyEvent, 1)
-	sess.Subscribe(func(ev Event) {
-		if e, ok := ev.(ReadyEvent); ok {
+	ready := make(chan core.ReadyEvent, 1)
+	sess.Subscribe(func(ev core.Event) {
+		if e, ok := ev.(core.ReadyEvent); ok {
 			ready <- e
 		}
 	})
@@ -480,11 +520,11 @@ func TestSession_ReadyEventCarriesOfferedTools(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no ready event")
 	}
-	if sess.ID() != "sess-1" {
-		t.Fatalf("session id = %q", sess.ID())
+	if conv.ID() != "sess-1" {
+		t.Fatalf("session id = %q", conv.ID())
 	}
-	if len(sess.OfferedTools()) != 2 {
-		t.Fatalf("offered tools = %v", sess.OfferedTools())
+	if len(conv.OfferedTools()) != 2 {
+		t.Fatalf("offered tools = %v", conv.OfferedTools())
 	}
 }
 
@@ -492,7 +532,7 @@ func TestSession_CloseIsIdempotent(t *testing.T) {
 	// given
 	// ... an open session
 	f := newFake()
-	sess := newSession(context.Background(), f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... it is closed twice
@@ -513,7 +553,7 @@ func TestSession_PromptAfterCloseFails(t *testing.T) {
 	// given
 	// ... a closed session
 	f := newFake()
-	sess := newSession(context.Background(), f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 	sess.Close()
 
 	// when
@@ -531,7 +571,7 @@ func TestSession_CancelledPromptInterruptsTheCLI(t *testing.T) {
 	// given
 	// ... a turn in flight that the caller is about to give up on
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -567,7 +607,7 @@ func TestSession_CloseReapsTheSubprocess(t *testing.T) {
 	// given
 	// ... an open session
 	f := newFake()
-	sess := newSession(context.Background(), f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	// when
 	// ... it is closed
@@ -588,7 +628,7 @@ func TestSession_SecondPromptWhileOneIsInFlight(t *testing.T) {
 	// given
 	// ... a session with a turn already under way
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 
 	started := make(chan struct{})
 	go func() {
@@ -610,8 +650,8 @@ func TestSession_SecondPromptWhileOneIsInFlight(t *testing.T) {
 
 	// then
 	// ... it is refused rather than queued, so the caller decides what to do
-	if !errors.Is(err, ErrPromptInFlight) {
-		t.Fatalf("err = %v, want ErrPromptInFlight", err)
+	if !errors.Is(err, core.ErrPromptInFlight) {
+		t.Fatalf("err = %v, want core.ErrPromptInFlight", err)
 	}
 	if first := <-inFlight; first != nil {
 		t.Fatalf("first prompt: %v", first)

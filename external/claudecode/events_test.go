@@ -1,16 +1,18 @@
-package pi
+package claudecode
 
 import (
 	"context"
 	"encoding/json"
 	"sync"
 	"testing"
+
+	"github.com/TheLazyLemur/pi-claude/core"
 )
 
-func collect(sess *Session) (*[]Event, *sync.Mutex) {
+func collect(sess *core.Session) (*[]core.Event, *sync.Mutex) {
 	var mu sync.Mutex
-	var events []Event
-	sess.Subscribe(func(ev Event) {
+	var events []core.Event
+	sess.Subscribe(func(ev core.Event) {
 		mu.Lock()
 		events = append(events, ev)
 		mu.Unlock()
@@ -22,7 +24,7 @@ func TestSession_PartialMessagesBecomeDeltas(t *testing.T) {
 	// given
 	// ... a session subscribed to streaming deltas
 	f := newFake()
-	sess := newTestSession(t, f, Options{IncludePartialMessages: true})
+	sess := newTestSession(t, f, core.Options{IncludePartialMessages: true})
 	events, mu := collect(sess)
 
 	// when
@@ -43,9 +45,9 @@ func TestSession_PartialMessagesBecomeDeltas(t *testing.T) {
 	// ... both arrive as deltas, tagged by kind
 	mu.Lock()
 	defer mu.Unlock()
-	var deltas []DeltaEvent
+	var deltas []core.DeltaEvent
 	for _, ev := range *events {
-		if d, ok := ev.(DeltaEvent); ok {
+		if d, ok := ev.(core.DeltaEvent); ok {
 			deltas = append(deltas, d)
 		}
 	}
@@ -64,7 +66,7 @@ func TestSession_StatusAndCompactionEvents(t *testing.T) {
 	// given
 	// ... a subscriber watching lifecycle events
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 	events, mu := collect(sess)
 
 	// when
@@ -82,13 +84,13 @@ func TestSession_StatusAndCompactionEvents(t *testing.T) {
 	// ... both surface as typed events instead of being dropped
 	mu.Lock()
 	defer mu.Unlock()
-	var status *StatusEvent
-	var compact *CompactEvent
+	var status *core.StatusEvent
+	var compact *core.CompactEvent
 	for _, ev := range *events {
 		switch e := ev.(type) {
-		case StatusEvent:
+		case core.StatusEvent:
 			status = &e
-		case CompactEvent:
+		case core.CompactEvent:
 			compact = &e
 		}
 	}
@@ -104,7 +106,7 @@ func TestSession_AuthStatusEvent(t *testing.T) {
 	// given
 	// ... a subscriber watching authentication
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 	events, mu := collect(sess)
 
 	// when
@@ -118,11 +120,11 @@ func TestSession_AuthStatusEvent(t *testing.T) {
 	sess.Prompt(context.Background(), "go")
 
 	// then
-	// ... it arrives as an AuthEvent
+	// ... it arrives as an core.AuthEvent
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range *events {
-		if e, ok := ev.(AuthEvent); ok {
+		if e, ok := ev.(core.AuthEvent); ok {
 			if !e.Authenticating || len(e.Output) != 1 {
 				t.Fatalf("auth event = %+v", e)
 			}
@@ -139,7 +141,7 @@ func TestSession_StructuredOutputReachesTheTurn(t *testing.T) {
 		Pass bool `json:"pass"`
 	}
 	f := newFake()
-	sess := newTestSession(t, f, Options{OutputSchema: SchemaFor[verdict]()})
+	sess := newTestSession(t, f, core.Options{OutputSchema: core.SchemaFor[verdict]()})
 
 	// when
 	// ... the CLI returns a structured result
@@ -172,7 +174,7 @@ func TestSession_RateLimitEvent(t *testing.T) {
 	// given
 	// ... a subscriber watching for rate limit reports
 	f := newFake()
-	sess := newTestSession(t, f, Options{})
+	sess := newTestSession(t, f, core.Options{})
 	events, mu := collect(sess)
 
 	// when
@@ -195,7 +197,7 @@ func TestSession_RateLimitEvent(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range *events {
-		if e, ok := ev.(RateLimitEvent); ok {
+		if e, ok := ev.(core.RateLimitEvent); ok {
 			if e.Status != "allowed" || e.Window != "five_hour" {
 				t.Fatalf("rate limit = %+v", e)
 			}

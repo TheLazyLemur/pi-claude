@@ -1,4 +1,4 @@
-package pi
+package core
 
 import (
 	"encoding/json"

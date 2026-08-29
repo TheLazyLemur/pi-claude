@@ -1,55 +1,56 @@
-package pi
+package claudecode
 
 import (
 	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/TheLazyLemur/pi-claude/core"
 	"github.com/TheLazyLemur/pi-claude/internal/proto"
 )
 
 // readLoop turns protocol frames into events, and answers the control requests
 // the CLI sends back to us.
-func (s *Session) readLoop() {
-	for frame := range s.transport.Frames() {
+func (c *Conversation) readLoop() {
+	for frame := range c.transport.Frames() {
 		if frame.Err != nil {
-			s.emit(ErrorEvent{Err: frame.Err})
+			c.rt.Emit(core.ErrorEvent{Err: frame.Err})
 			continue
 		}
 
 		switch frame.Type {
 		case "system":
-			s.onSystem(frame)
+			c.onSystem(frame)
 		case "assistant":
-			s.onAssistant(frame)
+			c.onAssistant(frame)
 		case "user":
-			s.onUser(frame)
+			c.onUser(frame)
 		case "tool_progress":
-			s.onToolProgress(frame)
+			c.onToolProgress(frame)
 		case "control_request":
-			s.onControlRequest(frame)
+			c.onControlRequest(frame)
 		case "control_response":
-			s.onControlResponse(frame)
+			c.onControlResponse(frame)
 		case "stream_event":
-			s.onStreamEvent(frame)
+			c.onStreamEvent(frame)
 		case "auth_status":
-			s.onAuthStatus(frame)
+			c.onAuthStatus(frame)
 		case "rate_limit_event":
-			s.onRateLimit(frame)
+			c.onRateLimit(frame)
 		case "result":
-			s.onResult(frame)
+			c.onResult(frame)
 		}
 	}
 }
 
-func (s *Session) onSystem(frame proto.Frame) {
+func (c *Conversation) onSystem(frame proto.Frame) {
 	switch frame.Subtype {
 	case "status":
 		var msg struct {
 			Status string `json:"status"`
 		}
 		if json.Unmarshal(frame.Raw, &msg) == nil {
-			s.emit(StatusEvent{Status: msg.Status})
+			c.rt.Emit(core.StatusEvent{Status: msg.Status})
 		}
 		return
 	case "compact_boundary":
@@ -60,7 +61,7 @@ func (s *Session) onSystem(frame proto.Frame) {
 			} `json:"compact_metadata"`
 		}
 		if json.Unmarshal(frame.Raw, &msg) == nil {
-			s.emit(CompactEvent{Trigger: msg.Metadata.Trigger, TokensBefore: msg.Metadata.PreTokens})
+			c.rt.Emit(core.CompactEvent{Trigger: msg.Metadata.Trigger, TokensBefore: msg.Metadata.PreTokens})
 		}
 		return
 	case "init":
@@ -75,17 +76,17 @@ func (s *Session) onSystem(frame proto.Frame) {
 		Tools     []string `json:"tools"`
 	}
 	if err := json.Unmarshal(frame.Raw, &init); err != nil {
-		s.emit(ErrorEvent{Err: fmt.Errorf("pi: parse init: %w", err)})
+		c.rt.Emit(core.ErrorEvent{Err: fmt.Errorf("pi: parse init: %w", err)})
 		return
 	}
 
-	s.mu.Lock()
-	s.sessionID = init.SessionID
-	s.model = init.Model
-	s.offeredTools = init.Tools
-	s.mu.Unlock()
+	c.mu.Lock()
+	c.sessionID = init.SessionID
+	c.model = init.Model
+	c.offeredTools = init.Tools
+	c.mu.Unlock()
 
-	s.emit(ReadyEvent{
+	c.rt.Emit(core.ReadyEvent{
 		SessionID: init.SessionID,
 		Model:     init.Model,
 		CWD:       init.CWD,
@@ -105,14 +106,14 @@ type contentBlock struct {
 	IsError  bool            `json:"is_error"`
 }
 
-func (s *Session) onAssistant(frame proto.Frame) {
+func (c *Conversation) onAssistant(frame proto.Frame) {
 	var msg struct {
 		Message struct {
 			Content []contentBlock `json:"content"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(frame.Raw, &msg); err != nil {
-		s.emit(ErrorEvent{Err: fmt.Errorf("pi: parse assistant: %w", err)})
+		c.rt.Emit(core.ErrorEvent{Err: fmt.Errorf("pi: parse assistant: %w", err)})
 		return
 	}
 
@@ -122,24 +123,23 @@ func (s *Session) onAssistant(frame proto.Frame) {
 			if block.Text == "" {
 				continue
 			}
-			s.appendText(block.Text)
-			s.emit(TextEvent{Text: block.Text})
+			c.rt.Emit(core.TextEvent{Text: block.Text})
 		case "thinking":
 			if block.Thinking != "" {
-				s.emit(ThinkingEvent{Text: block.Thinking})
+				c.rt.Emit(core.ThinkingEvent{Text: block.Thinking})
 			}
 		case "tool_use":
-			s.emit(ToolCallEvent{
+			c.rt.Emit(core.ToolCallEvent{
 				ID:    block.ID,
-				Name:  s.tools.bare(block.Name),
+				Name:  c.tools.bare(block.Name),
 				Input: block.Input,
-				Mine:  s.tools.owns(block.Name),
+				Mine:  c.tools.owns(block.Name),
 			})
 		}
 	}
 }
 
-func (s *Session) onUser(frame proto.Frame) {
+func (c *Conversation) onUser(frame proto.Frame) {
 	// Content is a plain string when the CLI echoes our prompt, and a block
 	// list when it carries tool results, so it is decoded leniently.
 	var msg struct {
@@ -159,7 +159,7 @@ func (s *Session) onUser(frame proto.Frame) {
 		if block.Type != "tool_result" {
 			continue
 		}
-		s.emit(ToolResultEvent{
+		c.rt.Emit(core.ToolResultEvent{
 			ID:      block.ToolUse,
 			Text:    decodeToolResultContent(block.Content),
 			IsError: block.IsError,
@@ -191,7 +191,7 @@ func decodeToolResultContent(raw json.RawMessage) string {
 	return out
 }
 
-func (s *Session) onToolProgress(frame proto.Frame) {
+func (c *Conversation) onToolProgress(frame proto.Frame) {
 	var msg struct {
 		ToolUseID string  `json:"tool_use_id"`
 		ToolName  string  `json:"tool_name"`
@@ -200,14 +200,14 @@ func (s *Session) onToolProgress(frame proto.Frame) {
 	if json.Unmarshal(frame.Raw, &msg) != nil {
 		return
 	}
-	s.emit(ToolProgressEvent{
+	c.rt.Emit(core.ToolProgressEvent{
 		ID:      msg.ToolUseID,
-		Name:    s.tools.bare(msg.ToolName),
+		Name:    c.tools.bare(msg.ToolName),
 		Elapsed: time.Duration(msg.Elapsed * float64(time.Second)),
 	})
 }
 
-func (s *Session) onResult(frame proto.Frame) {
+func (c *Conversation) onResult(frame proto.Frame) {
 	var res struct {
 		Subtype      string          `json:"subtype"`
 		Result       string          `json:"result"`
@@ -215,21 +215,18 @@ func (s *Session) onResult(frame proto.Frame) {
 		Errors       []string        `json:"errors"`
 		NumTurns     int             `json:"num_turns"`
 		TotalCostUSD float64         `json:"total_cost_usd"`
-		Usage        Usage           `json:"usage"`
-		Denials      []Denial        `json:"permission_denials"`
+		Usage        core.Usage      `json:"usage"`
+		Denials      []core.Denial   `json:"permission_denials"`
 		Structured   json.RawMessage `json:"structured_output"`
 	}
 	if err := json.Unmarshal(frame.Raw, &res); err != nil {
-		s.emit(ErrorEvent{Err: fmt.Errorf("pi: parse result: %w", err)})
+		c.rt.Emit(core.ErrorEvent{Err: fmt.Errorf("pi: parse result: %w", err)})
 		return
 	}
 
-	s.mu.Lock()
-	pending := s.pending
-	s.pending = nil
-	s.mu.Unlock()
-
-	turn := Turn{
+	// Text and Duration are filled in by the caller from the events it saw, so
+	// every backend does not have to keep its own tally.
+	turn := core.Turn{
 		StructuredOutput: res.Structured,
 		Subtype:          res.Subtype,
 		Result:           res.Result,
@@ -240,32 +237,22 @@ func (s *Session) onResult(frame proto.Frame) {
 		Usage:            res.Usage,
 		Denials:          res.Denials,
 	}
-	if pending != nil {
-		turn.Text = pending.text.String()
-		turn.Duration = time.Since(pending.started)
+
+	c.mu.Lock()
+	pending := c.pending
+	c.pending = nil
+	c.mu.Unlock()
+
+	if pending == nil {
+		return
 	}
-
-	s.emit(TurnEvent{Turn: turn})
-
-	if pending != nil {
-		select {
-		case pending.done <- turn:
-		default:
-		}
-	}
-}
-
-func (s *Session) appendText(text string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending != nil {
-		s.pending.text.WriteString(text)
+	select {
+	case pending <- turn:
+	default:
 	}
 }
 
-// onStreamEvent turns partial-message chunks into deltas. Requires
-// Options.IncludePartialMessages.
-func (s *Session) onStreamEvent(frame proto.Frame) {
+func (c *Conversation) onStreamEvent(frame proto.Frame) {
 	var msg struct {
 		Event struct {
 			Type  string `json:"type"`
@@ -283,16 +270,16 @@ func (s *Session) onStreamEvent(frame proto.Frame) {
 	switch msg.Event.Delta.Type {
 	case "text_delta":
 		if msg.Event.Delta.Text != "" {
-			s.emit(DeltaEvent{Text: msg.Event.Delta.Text})
+			c.rt.Emit(core.DeltaEvent{Text: msg.Event.Delta.Text})
 		}
 	case "thinking_delta":
 		if msg.Event.Delta.Thinking != "" {
-			s.emit(DeltaEvent{Text: msg.Event.Delta.Thinking, Thinking: true})
+			c.rt.Emit(core.DeltaEvent{Text: msg.Event.Delta.Thinking, Thinking: true})
 		}
 	}
 }
 
-func (s *Session) onAuthStatus(frame proto.Frame) {
+func (c *Conversation) onAuthStatus(frame proto.Frame) {
 	var msg struct {
 		IsAuthenticating bool     `json:"isAuthenticating"`
 		Output           []string `json:"output"`
@@ -301,14 +288,14 @@ func (s *Session) onAuthStatus(frame proto.Frame) {
 	if json.Unmarshal(frame.Raw, &msg) != nil {
 		return
 	}
-	s.emit(AuthEvent{
+	c.rt.Emit(core.AuthEvent{
 		Authenticating: msg.IsAuthenticating,
 		Output:         msg.Output,
 		Error:          msg.Error,
 	})
 }
 
-func (s *Session) onRateLimit(frame proto.Frame) {
+func (c *Conversation) onRateLimit(frame proto.Frame) {
 	var msg struct {
 		Info struct {
 			Status         string `json:"status"`
@@ -328,7 +315,7 @@ func (s *Session) onRateLimit(frame proto.Frame) {
 		usage[name] = window.Utilization
 	}
 
-	ev := RateLimitEvent{
+	ev := core.RateLimitEvent{
 		Status:      msg.Info.Status,
 		Window:      msg.Info.RateLimitType,
 		Utilization: usage,
@@ -336,5 +323,5 @@ func (s *Session) onRateLimit(frame proto.Frame) {
 	if msg.Info.ResetsAt > 0 {
 		ev.ResetsAt = time.Unix(msg.Info.ResetsAt, 0)
 	}
-	s.emit(ev)
+	c.rt.Emit(ev)
 }
