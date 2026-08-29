@@ -37,6 +37,8 @@ type Session struct {
 	pending map[string][]string
 	entries []*entry
 	byCard  map[string]*entry
+	killCmd context.CancelFunc
+	shell   bool
 }
 
 // entry is one thing that happened, kept as state rather than as the HTML that
@@ -52,10 +54,15 @@ type entry struct {
 	Note          string
 	Settled       string
 	Rail          bool
+
+	// shell only
+	Output  string
+	Exit    int
+	HasExit bool
 }
 
 // NewSession starts a claude subprocess for one piece of work.
-func NewSession(id, workspaceID, root, branch string, worktree bool, hub *Hub, model string) (*Session, error) {
+func NewSession(id, workspaceID, root, branch string, worktree bool, hub *Hub, model string, shell bool) (*Session, error) {
 	ws, err := newWorkspace(root)
 	if err != nil {
 		return nil, err
@@ -71,6 +78,7 @@ func NewSession(id, workspaceID, root, branch string, worktree bool, hub *Hub, m
 		hub:         hub,
 		ws:          ws,
 		mode:        "act",
+		shell:       shell,
 		pending:     map[string][]string{},
 		byCard:      map[string]*entry{},
 	}
@@ -86,7 +94,7 @@ func NewSession(id, workspaceID, root, branch string, worktree bool, hub *Hub, m
 		StrictMCPConfig: true,
 		CustomTools:     s.tools(),
 
-		SystemPrompt: systemPrompt,
+		SystemPrompt: promptFor(shell),
 		MaxTurns:     60,
 
 		PermissionMode: pi.PermissionModeDefault,
@@ -267,7 +275,23 @@ func (s *Session) Ask(text string) {
 	}()
 }
 
-func (s *Session) Interrupt() error { return s.sess.Interrupt() }
+// Interrupt stops the turn, and any command it left running.
+func (s *Session) Interrupt() error {
+	s.mu.Lock()
+	kill := s.killCmd
+	s.mu.Unlock()
+	if kill != nil {
+		kill()
+	}
+	return s.sess.Interrupt()
+}
+
+// running records how to stop the command currently in flight.
+func (s *Session) running(cancel context.CancelFunc) {
+	s.mu.Lock()
+	s.killCmd = cancel
+	s.mu.Unlock()
+}
 
 func (s *Session) finish(t pi.Turn) {
 	s.mu.Lock()

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	pi "github.com/TheLazyLemur/pi-claude"
 )
@@ -17,10 +21,10 @@ type todo struct {
 
 const systemPrompt = `You are a coding agent working in one directory, driven from a web console.
 
-Every tool you have is provided by that console. There is no shell and no
-network. Nothing outside the directory is reachable: paths that escape it are
-refused, not redirected. You cannot run tests or builds, so never say you have.
+Every tool you have is provided by that console. Paths that escape the directory
+are refused, not redirected.
 
+{{SHELL}}
 Work in small steps and say what you are doing as you go, briefly. Read before
 you write, and prefer edit_file over write_file so you do not throw away work
 you have not seen. Match the conventions already in the files you touch.
@@ -29,8 +33,8 @@ Use todo_write when a task has more than two steps. Keep it current: mark one
 item doing, mark it done before starting the next. The person watching uses it
 to know where you are.
 
-In plan mode the file-writing tools are refused. Read, investigate, and say what
-you would change and why. Do not fight the refusal.
+In plan mode the writing tools are refused. Read, investigate, and
+say what you would change and what you would run. Do not fight the refusal.
 
 Be terse. No preamble, no summaries of what you just did unless asked.`
 
@@ -62,7 +66,7 @@ func (a *Session) tools() []pi.Tool {
 		Items []todo `json:"items" desc:"The full task list, replacing whatever was there"`
 	}
 
-	return []pi.Tool{
+	tools := []pi.Tool{
 		pi.DefineTool("list_files", "List the files in the workspace.",
 			func(_ context.Context, p listParams) (pi.ToolResult, error) {
 				paths, truncated, err := w.walk()
@@ -220,6 +224,11 @@ func (a *Session) tools() []pi.Tool {
 				return pi.Text("task list updated (%d items)", len(p.Items)), nil
 			}),
 	}
+
+	if a.shell {
+		tools = append(tools, a.shellTool())
+	}
+	return tools
 }
 
 // settle stops a tick pulsing once its tool has finished.
@@ -270,4 +279,167 @@ func (a *Session) refuse(card, name string) {
 	a.emit("msg", fmt.Sprintf(
 		`<div id="%s" hx-swap-oob="beforeend"><div class="note">%s</div></div>`, card, esc(note)))
 	a.settleCard(card, "deny")
+}
+
+// shellParams is what the model sends to run something.
+type shellParams struct {
+	Command string `json:"command" desc:"The command to run, as you would type it in a shell"`
+	Timeout int    `json:"timeout_seconds,omitempty" desc:"How long to allow. Defaults to 120, capped at 600."`
+}
+
+const (
+	shellDefaultTimeout = 120 * time.Second
+	shellMaxTimeout     = 600 * time.Second
+	shellMaxOutput      = 96 * 1024
+	shellTailLines      = 200
+)
+
+// shellTool runs a command in the workspace and streams its output into the
+// page as it arrives.
+//
+// This is the one tool that is not a narrow verb. It hands the model arbitrary
+// execution, which is the point: an agent that cannot run your tests cannot
+// tell whether its change worked.
+//
+// It starts in the workspace, has a deadline, and is refused in plan mode. None
+// of that is a security boundary. The very first real run of this tool began
+// with "cd ~ && go test ./...", which is the whole story: a shell can leave the
+// directory it was started in, and no amount of checking the command text will
+// reliably stop it. Enable this for work you are watching, and use -shell=false
+// when you want the workspace to mean something.
+func (a *Session) shellTool() pi.Tool {
+	return pi.DefineTool("shell",
+		"Run a shell command in the project directory. Use it to build, test, lint, or inspect. "+
+			"Output is streamed back with the exit code.",
+		func(ctx context.Context, p shellParams) (pi.ToolResult, error) {
+			card := a.claimCard("shell")
+			command := strings.TrimSpace(p.Command)
+			if command == "" {
+				a.fail(card, "no command given")
+				return pi.Errorf("give a command to run"), nil
+			}
+			if a.planning() {
+				a.refuse(card, "shell")
+				return pi.Errorf("plan mode: say what you would run and why, instead of running it"), nil
+			}
+
+			timeout := shellDefaultTimeout
+			if p.Timeout > 0 {
+				timeout = min(time.Duration(p.Timeout)*time.Second, shellMaxTimeout)
+			}
+
+			ctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			a.running(cancel)
+			defer a.running(nil)
+
+			cmd := exec.CommandContext(ctx, shellArgv(command)[0], shellArgv(command)[1:]...)
+			cmd.Dir = a.ws.root
+			// Its own group, so a timeout takes the children with it rather
+			// than leaving a test runner behind.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+			pipe, err := cmd.StdoutPipe()
+			if err != nil {
+				a.fail(card, err.Error())
+				return pi.Errorf("could not start: %v", err), nil
+			}
+			cmd.Stderr = cmd.Stdout
+
+			if err := cmd.Start(); err != nil {
+				a.fail(card, err.Error())
+				return pi.Errorf("could not start: %v", err), nil
+			}
+
+			var seen strings.Builder
+			truncated := false
+			scanner := bufio.NewScanner(pipe)
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+			for scanner.Scan() {
+				line := scanner.Text()
+				if seen.Len() >= shellMaxOutput {
+					truncated = true
+					continue
+				}
+				seen.WriteString(line)
+				seen.WriteByte('\n')
+				if card != "" {
+					a.emit("msg", termLineHTML(card, line))
+				}
+			}
+
+			waitErr := cmd.Wait()
+			code := cmd.ProcessState.ExitCode()
+
+			out := seen.String()
+			if truncated {
+				out += fmt.Sprintf("\n... output stopped at %d KB\n", shellMaxOutput/1024)
+			}
+			if ctx.Err() != nil {
+				out += fmt.Sprintf("\n... killed after %s\n", timeout)
+				code = -1
+			}
+
+			a.finishShell(card, out, code)
+
+			summary := fmt.Sprintf("exit %d\n%s", code, tail(out, shellTailLines))
+			if code != 0 || waitErr != nil {
+				return pi.ToolResult{Text: summary, IsError: true}, nil
+			}
+			return pi.Text("%s", summary), nil
+		})
+}
+
+// finishShell records the run and marks the card done.
+func (a *Session) finishShell(card, out string, code int) {
+	if card == "" {
+		return
+	}
+	a.updateCard(card, func(e *entry) {
+		e.Output, e.Exit, e.HasExit = out, code, true
+	})
+	a.emit("msg", termExitHTML(card, code))
+
+	kind := "write"
+	if code != 0 {
+		kind = "deny"
+	}
+	a.settleCard(card, kind)
+}
+
+// tail keeps the end of a long output, which is where the failure usually is.
+func tail(s string, lines int) string {
+	all := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(all) <= lines {
+		return strings.Join(all, "\n")
+	}
+	return fmt.Sprintf("... %d earlier lines\n%s", len(all)-lines, strings.Join(all[len(all)-lines:], "\n"))
+}
+
+// shellArgv prefers bash with pipefail, so a failing command in a pipeline is
+// still a failure. Without it "go test | head" exits 0 whatever go test did,
+// which quietly turns a red build green.
+func shellArgv(command string) []string {
+	if bash, err := exec.LookPath("bash"); err == nil {
+		return []string{bash, "-o", "pipefail", "-c", command}
+	}
+	return []string{"sh", "-c", command}
+}
+
+// promptFor tailors the system prompt to the tools this session actually has.
+// Telling a model about a shell it does not have is worse than saying nothing.
+func promptFor(shell bool) string {
+	if shell {
+		return strings.Replace(systemPrompt, "{{SHELL}}",
+			`You can run commands with the shell tool: builds, tests, linters, git, anything
+you would type yourself. Use it. A change you have not run is a guess, so when
+you change code, run the thing that proves it. In plan mode the shell is
+refused too: say what you would run.
+`, 1)
+	}
+	return strings.Replace(systemPrompt, "{{SHELL}}",
+		`There is no shell and no network, so you cannot run tests or builds. Never
+say or imply that you have.
+`, 1)
 }

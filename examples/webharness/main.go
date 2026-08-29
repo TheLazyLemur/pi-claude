@@ -24,6 +24,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7777", "address to serve on")
 	model := flag.String("model", "", "model to use (default: the CLI's)")
 	debug := flag.Bool("debug", false, "enable /debug/replay, which renders a fake turn")
+	shell := flag.Bool("shell", true, "give the agent a shell. It can leave the project directory.")
 	flag.Parse()
 
 	roots := flag.Args()
@@ -41,7 +42,7 @@ func main() {
 		fmt.Printf("project  %s%s\n", w.Root, map[bool]string{true: "  (git)"}[w.IsRepo])
 	}
 
-	srv := &server{store: store, hub: hub, model: *model, debug: *debug}
+	srv := &server{store: store, hub: hub, model: *model, debug: *debug, shell: *shell}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", srv.index)
@@ -54,7 +55,15 @@ func main() {
 	mux.HandleFunc("POST /debug/replay", srv.replay)
 
 	fmt.Printf("console  http://%s\n", *addr)
-	fmt.Printf("tools    6 custom, plus Skill. No other built-ins.\n\n")
+	tools := "6 custom, plus Skill"
+	if *shell {
+		tools = "7 custom including shell, plus Skill"
+	}
+	fmt.Printf("tools    %s. No other built-ins.\n", tools)
+	if *shell {
+		fmt.Printf("         the shell can leave the project directory. -shell=false to remove it.\n")
+	}
+	fmt.Println()
 
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
@@ -66,6 +75,7 @@ type server struct {
 	hub   *Hub
 	model string
 	debug bool
+	shell bool
 }
 
 // index sends you to the newest session, or offers a blank one on the first
@@ -218,7 +228,7 @@ func (s *server) start(ws *Workspace, worktree bool, first string) (*Session, er
 		root, branch = path, br
 	}
 
-	sess, err := NewSession(s.store.nextID(), ws.ID, root, branch, worktree, s.hub, s.model)
+	sess, err := NewSession(s.store.nextID(), ws.ID, root, branch, worktree, s.hub, s.model, s.shell)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +277,7 @@ func (s *server) replay(w http.ResponseWriter, r *http.Request) {
 // kindOf colours a rail tick by what the tool does.
 func kindOf(name string) string {
 	switch name {
-	case "write_file", "edit_file":
+	case "write_file", "edit_file", "shell":
 		return "write"
 	default:
 		return "read"
@@ -276,7 +286,7 @@ func kindOf(name string) string {
 
 // summarise is the one-line version of a tool's arguments for the rail.
 func summarise(input map[string]any) string {
-	for _, key := range []string{"path", "pattern", "dir"} {
+	for _, key := range []string{"command", "path", "pattern", "dir"} {
 		if v, ok := input[key].(string); ok && v != "" {
 			return v
 		}

@@ -18,11 +18,12 @@ A supervision panel, not a chat window. The agent has hands on your files, so
 the job of the page is to make what it is doing legible and stoppable. Tool
 activity is the content; the prose is secondary.
 
-Six tools, all defined here in Go:
+Seven tools, all defined here in Go:
 
 - `list_files`, `read_file`, `search`
 - `write_file`, `edit_file`, both of which draw their own diff
 - `todo_write`, which drives the task list in the sidebar
+- `shell`, which runs commands and streams the output back
 
 The only built-in kept is `Skill`, because that is how Claude Code loads a
 project's own instructions and reimplementing it would be silly.
@@ -56,6 +57,35 @@ Cleaning up is ordinary git:
 git worktree remove .worktrees/<name>
 git branch -D console/<name>
 ```
+
+## The shell, and what it costs
+
+An agent that cannot run your tests cannot tell whether its change worked, so
+`shell` runs commands in the project and streams the output into the page with
+its exit code.
+
+Be clear-eyed about what that changes. The other six tools are narrow verbs with
+a path check, and the project directory means something. A shell is not a verb.
+It starts in the project, has a deadline, is refused in plan mode, and is killed
+when you press Stop, but **none of that is a security boundary**. The first real
+command the agent ever ran through this tool was:
+
+```
+cd /Users/danrousseau/ && go test ./...
+```
+
+That is the whole story. Checking the command text would not have helped;
+`pushd`, a script, or a subshell all get out just as easily. Turn it off with
+`-shell=false` when the boundary needs to be real, and leave it on for work you
+are watching.
+
+Commands run under `bash -o pipefail` where bash exists. Without it
+`go test ./... | head -40` exits 0 no matter what `go test` did, which quietly
+turns a red build green. That bit us on the first run too.
+
+The system prompt follows the toolset: with a shell it is told to run the thing
+that proves the change, and without one it is told plainly that it cannot and
+must not imply otherwise.
 
 ## What it borrows
 

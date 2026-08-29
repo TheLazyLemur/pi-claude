@@ -410,7 +410,7 @@ with which piece of work is your job.
 
 ## Examples
 
-- `examples/webharness`: browser UI over htmx and SSE, with projects, sessions and git worktrees
+- `examples/webharness`: browser UI over htmx and SSE, with projects, sessions, worktrees and a shell
 - `examples/harness`: a working coding agent, five custom tools, no built-ins, stdin REPL
 - `examples/minimal`: one prompt, one answer
 - `examples/tools-only`: every built-in off, one custom tool, checked end to end

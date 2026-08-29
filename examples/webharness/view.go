@@ -216,6 +216,21 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
 .tool.deny .name{color:var(--warn)}
 .tool.deny .note{color:var(--warn); background:var(--warn-bg)}
 
+/* ---------- terminal ---------- */
+.term{
+  background:#0f1623; color:#c9d6e8; font-family:var(--mono); font-size:12px;
+  line-height:1.6; padding:10px 14px; max-height:340px; overflow:auto; white-space:pre-wrap;
+  word-break:break-word;
+}
+.term .l{display:block}
+.term:empty{display:none}
+.term::-webkit-scrollbar{width:10px} .term::-webkit-scrollbar-thumb{background:#2a3852; border-radius:5px}
+.tool .exit{margin-left:auto; font-family:var(--mono); font-size:11px}
+.tool .exit.ok{color:var(--add)} .tool .exit.bad{color:var(--del)}
+.tool .cmd{font-family:var(--mono); font-size:12px; color:var(--ink)}
+.spin{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--signal);
+  animation:beat 1.1s ease-in-out infinite; margin-left:auto}
+
 /* ---------- diff ---------- */
 .diff{font-family:var(--mono); font-size:12px; line-height:1.65; overflow-x:auto}
 .diff .row{display:grid; grid-template-columns:44px 1fr; white-space:pre}
@@ -415,6 +430,12 @@ func thinkHTML(text string) string {
 }
 
 func toolHTML(id, name, args string) string {
+	if name == "shell" {
+		return fmt.Sprintf(
+			`<div class="tool" id="%s"><header><span class="name">shell</span><span class="cmd">%s</span>%s</header>`+
+				`<div class="term" id="%s-term"></div></div>`,
+			id, esc(args), exitHTML(id, 0, false), id)
+	}
 	return fmt.Sprintf(
 		`<div class="tool" id="%s"><header><span class="name">%s</span><span class="args">%s</span>%s</header></div>`,
 		id, esc(name), esc(args), tallySlot(id))
@@ -634,6 +655,10 @@ func renderEntry(e *entry) string {
 		class = "tool deny"
 	}
 
+	if e.Name == "shell" {
+		return renderShell(e, class)
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, `<div class="%s" id="%s"><header><span class="name">%s</span><span class="args">%s</span>`,
 		class, esc(e.ID), esc(e.Name), esc(e.Arg))
@@ -655,6 +680,56 @@ func renderEntry(e *entry) string {
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+// renderShell draws a command, its output, and how it ended.
+func renderShell(e *entry, class string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `<div class="%s" id="%s"><header><span class="name">shell</span><span class="cmd">%s</span>%s</header>`,
+		class, esc(e.ID), esc(e.Arg), exitHTML(e.ID, e.Exit, e.HasExit))
+
+	if e.Note != "" {
+		fmt.Fprintf(&b, `<div class="note">%s</div>`, esc(e.Note))
+	}
+
+	fmt.Fprintf(&b, `<div class="term" id="%s-term">`, esc(e.ID))
+	for _, line := range strings.Split(strings.TrimRight(e.Output, "\n"), "\n") {
+		if line == "" && e.Output == "" {
+			continue
+		}
+		fmt.Fprintf(&b, `<span class="l">%s</span>`, esc(line))
+	}
+	b.WriteString(`</div></div>`)
+	return b.String()
+}
+
+// exitHTML is the header's right-hand side: a pulse while it runs, the exit
+// code once it is done.
+func exitHTML(id string, code int, done bool) string {
+	if !done {
+		return fmt.Sprintf(`<span class="spin" id="%s-exit"></span>`, esc(id))
+	}
+	class := "ok"
+	if code != 0 {
+		class = "bad"
+	}
+	label := fmt.Sprintf("exit %d", code)
+	if code == -1 {
+		label = "killed"
+	}
+	return fmt.Sprintf(`<span class="exit %s" id="%s-exit">%s</span>`, class, esc(id), esc(label))
+}
+
+// termLineHTML appends one line of output to a running command's card.
+func termLineHTML(cardID, line string) string {
+	return fmt.Sprintf(`<div id="%s-term" hx-swap-oob="beforeend"><span class="l">%s</span></div>`,
+		cardID, esc(line))
+}
+
+// termExitHTML swaps the pulse for the exit code.
+func termExitHTML(cardID string, code int) string {
+	html := exitHTML(cardID, code, true)
+	return strings.Replace(html, `id="`+cardID+`-exit"`, `id="`+cardID+`-exit" hx-swap-oob="true"`, 1)
 }
 
 // diffRows is the diff body, shared by the live fragment and the replay.
