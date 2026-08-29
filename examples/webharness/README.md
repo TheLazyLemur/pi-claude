@@ -87,6 +87,19 @@ The system prompt follows the toolset: with a shell it is told to run the thing
 that proves the change, and without one it is told plainly that it cannot and
 must not imply otherwise.
 
+## Reviewing and merging
+
+The **Changes** chip in the header opens a drawer down the right: every file the
+session touched, each one expandable to its diff, counted against the commit it
+started from. Files git has never seen are included, because a new test file is
+very much part of what the agent did.
+
+For a session on its own branch there is a **Merge** button. It stages the
+session's work, commits it under the first thing you asked for, and merges the
+branch into the checkout it forked from with `--no-ff`. The worktree stays put
+afterwards, so you can keep poking at it. If the merge conflicts you are told,
+and the branch is left alone.
+
 ## What it borrows
 
 - Plan and Act, from Cline. In Plan the writing tools are refused in Go, not
@@ -94,6 +107,20 @@ must not imply otherwise.
 - A diff on every write, from Aider.
 - A live task list, from Claude Code.
 - A running cost meter, from OpenCode.
+- The review-and-merge surface, from Conductor. Of everything looked at, this is
+  the idea that mattered: a session on a branch is only useful if you can see
+  what it did and take it.
+- Keyboard chips on controls, from Zed.
+
+Looking at what the field actually does was worth the time. Cline is white with
+violet, Amp is a warm dark gradient with amber, Zed is near-black with blue,
+Conductor is near-black with a starfield, OpenCode is near-black and entirely
+monospace. Four of the five are a dark ground with one bright accent, which is
+also the shape of most generated design right now.
+
+Which is the argument for staying light. A diff reads better on paper than on
+tar, the one dark surface here is the terminal, where dark means something, and
+nobody else in this field looks like it.
 
 ## The rail
 

@@ -50,6 +50,8 @@ func main() {
 	mux.HandleFunc("POST /s/{id}/prompt", srv.prompt)
 	mux.HandleFunc("POST /s/{id}/interrupt", srv.interrupt)
 	mux.HandleFunc("POST /s/{id}/mode", srv.mode)
+	mux.HandleFunc("GET /s/{id}/changes", srv.changes)
+	mux.HandleFunc("POST /s/{id}/merge", srv.merge)
 	mux.HandleFunc("POST /sessions", srv.create)
 	mux.Handle("GET /events", hub)
 	mux.HandleFunc("POST /debug/replay", srv.replay)
@@ -133,6 +135,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		Todos:    todosHTML(sess.Todos()),
 		SID:      sess.ID,
 		Error:    r.URL.Query().Get("err"),
+		Changed:  countChanged(sess),
 	}))
 }
 
@@ -164,6 +167,65 @@ func (s *server) mode(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.SetMode(m)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// changes renders the review drawer.
+func (s *server) changes(w http.ResponseWriter, r *http.Request) {
+	sess := s.store.Session(r.PathValue("id"))
+	if sess == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	files, err := sess.changes()
+	if err != nil {
+		fmt.Fprint(w, changesHTML(sess, nil, nil, err.Error(), true))
+		return
+	}
+
+	diffs := map[string][]hunk{}
+	for _, f := range files {
+		if f.Status == "deleted" {
+			continue
+		}
+		diffs[f.Path] = sess.diffFor(f.Path)
+	}
+	fmt.Fprint(w, changesHTML(sess, files, diffs, "", false))
+}
+
+// merge folds a worktree session's branch back into the checkout it came from.
+func (s *server) merge(w http.ResponseWriter, r *http.Request) {
+	sess := s.store.Session(r.PathValue("id"))
+	if sess == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	out, err := sess.mergeInto()
+	if err != nil {
+		files, _ := sess.changes()
+		fmt.Fprint(w, changesHTML(sess, files, nil, err.Error(), true))
+		return
+	}
+
+	msg := "Merged into the main checkout. " + firstLine(out)
+	fmt.Fprint(w, changesHTML(sess, nil, nil, strings.TrimSpace(msg), false))
+}
+
+// countChanged is the number on the header chip.
+func countChanged(sess *Session) int {
+	files, err := sess.changes()
+	if err != nil {
+		return 0
+	}
+	return len(files)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // create starts a session, adding the project first if it is a new one, and

@@ -216,6 +216,56 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
 .tool.deny .name{color:var(--warn)}
 .tool.deny .note{color:var(--warn); background:var(--warn-bg)}
 
+/* ---------- review drawer ---------- */
+.chip{
+  display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule);
+  background:var(--card); color:var(--dim); padding:5px 11px; border-radius:2px;
+  font-size:12px; font-weight:500; cursor:pointer;
+}
+.chip:hover{border-color:var(--signal); color:var(--signal)}
+.chip b{font-family:var(--mono); font-size:11px; color:var(--ink); font-weight:600}
+.chip:hover b{color:var(--signal)}
+
+.drawer:empty{display:none}
+.drawer{
+  position:fixed; top:0; right:0; bottom:0; width:min(560px,92vw); z-index:40;
+  background:var(--card); border-left:1px solid var(--rule);
+  box-shadow:-20px 0 50px rgba(17,24,39,.10);
+  display:flex; flex-direction:column;
+  animation:slide .22s cubic-bezier(.2,.7,.3,1);
+}
+@keyframes slide{from{transform:translateX(14px); opacity:0}to{transform:none; opacity:1}}
+.drawer header{
+  display:flex; align-items:center; gap:10px; padding:0 calc(var(--u)*2.5);
+  height:56px; border-bottom:1px solid var(--rule); flex:0 0 auto;
+}
+.drawer header h2{margin:0; font-size:15px; letter-spacing:-.01em}
+.drawer .body{flex:1; overflow:auto; padding:calc(var(--u)*2)}
+.drawer footer{
+  border-top:1px solid var(--rule); padding:calc(var(--u)*2) calc(var(--u)*2.5);
+  display:flex; align-items:center; gap:12px;
+}
+.drawer footer .note{padding:0; font-family:var(--sans); font-size:12.5px}
+
+.file{border:1px solid var(--rule); border-radius:2px; margin-bottom:10px; overflow:hidden}
+.file > summary{
+  display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer;
+  font-family:var(--mono); font-size:12px; list-style:none;
+}
+.file > summary::-webkit-details-marker{display:none}
+.file[open] > summary{border-bottom:1px solid var(--rule-soft)}
+.file .st{font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim)}
+.file .n{margin-left:auto; white-space:nowrap}
+.file .n .a{color:var(--add)} .file .n .d{color:var(--del)}
+.merge{border:0; background:var(--add); color:#fff; padding:8px 18px; border-radius:2px; font-weight:600; font-size:13px}
+.merge:hover{filter:brightness(1.08)}
+.merge[disabled]{background:var(--dim)}
+
+kbd{
+  font-family:var(--mono); font-size:10px; border:1px solid var(--rule); border-bottom-width:2px;
+  border-radius:3px; padding:1px 5px; background:var(--card); color:var(--dim);
+}
+
 /* ---------- terminal ---------- */
 .term{
   background:#0f1623; color:#c9d6e8; font-family:var(--mono); font-size:12px;
@@ -287,6 +337,8 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
     <div class="brand"><span class="dot"></span><b>Console</b></div>
     <div class="where">{{ROOT}}</div>{{BADGE}}
     <div class="spacer"></div>
+    <button class="chip" hx-get="/s/{{SID}}/changes" hx-target="#drawer" hx-swap="innerHTML"
+            title="What this session changed">Changes <b id="nchanged">{{NCHANGED}}</b></button>
     <div class="meter" id="meter" sse-swap="meter" hx-swap="innerHTML">{{METER}}</div>
     <button class="stop" id="stop" hx-post="/s/{{SID}}/interrupt" hx-swap="none" title="Stop the current turn">Stop</button>
   </header>
@@ -325,7 +377,7 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
           <textarea name="prompt" id="prompt" placeholder="What needs doing?" autofocus></textarea>
           <div class="row">
             <div class="modes" id="modes" sse-swap="modes" hx-swap="innerHTML">{{MODES}}</div>
-            <span class="hint">&#8984;&#9166; to send &middot; esc to stop</span>
+            <span class="hint"><kbd>&#8984;</kbd><kbd>&#9166;</kbd> send &nbsp;<kbd>esc</kbd> stop</span>
             <button class="send" type="submit">Send</button>
           </div>
         </div>
@@ -334,6 +386,8 @@ dialog .actions{display:flex; gap:10px; justify-content:flex-end}
   </div>
 </div>
 
+
+<aside class="drawer" id="drawer"></aside>
 
 <dialog id="newdlg">
   <form method="post" action="/sessions">
@@ -584,6 +638,7 @@ type pageData struct {
 	Todos    string
 	SID      string
 	Error    string
+	Changed  int
 }
 
 func renderPage(d pageData) string {
@@ -627,6 +682,7 @@ func renderPage(d pageData) string {
 		"{{RAIL}}", d.Rail,
 		"{{TODOS}}", todos,
 		"{{SID}}", esc(d.SID),
+		"{{NCHANGED}}", fmt.Sprintf("%d", d.Changed),
 	).Replace(page)
 }
 
@@ -797,4 +853,64 @@ func badgeHTML(branch string) string {
 		return ""
 	}
 	return fmt.Sprintf(`<span class="badge">&#9282; %s</span>`, esc(branch))
+}
+
+// changesHTML is the review drawer: what this session did, and for a session on
+// its own branch, the button that folds it back in.
+func changesHTML(sess *Session, files []fileChange, diffs map[string][]hunk, message string, failed bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `<header><h2>Changes</h2><span class="label">%s</span>`+
+		`<button class="chip" style="margin-left:auto" onclick="document.getElementById('drawer').innerHTML=''">Close</button></header>`,
+		esc(scopeLabel(sess)))
+
+	b.WriteString(`<div class="body">`)
+	if len(files) == 0 {
+		b.WriteString(`<p class="label" style="color:#aab3c0">Nothing changed yet.</p>`)
+	}
+	for _, f := range files {
+		added, removed := f.Added, f.Del
+		if h, ok := diffs[f.Path]; ok {
+			added, removed = countChanges(h)
+		}
+		fmt.Fprintf(&b, `<details class="file"><summary><span class="st">%s</span>%s`+
+			`<span class="n"><span class="a">+%d</span> <span class="d">-%d</span></span></summary>`,
+			esc(f.Status), esc(f.Path), added, removed)
+		if h, ok := diffs[f.Path]; ok && len(h) > 0 {
+			b.WriteString(diffRows(h))
+		}
+		b.WriteString(`</details>`)
+	}
+	b.WriteString(`</div>`)
+
+	b.WriteString(`<footer>`)
+	switch {
+	case message != "" && failed:
+		fmt.Fprintf(&b, `<span class="note" style="color:var(--del)">%s</span>`, esc(message))
+	case message != "":
+		fmt.Fprintf(&b, `<span class="note" style="color:var(--add)">%s</span>`, esc(message))
+	case sess.Worktree && len(files) > 0:
+		fmt.Fprintf(&b, `<span class="note">Commit %s and merge it back.</span>`, esc(sess.Branch))
+	case sess.Worktree:
+		b.WriteString(`<span class="note">Nothing to merge yet.</span>`)
+	default:
+		b.WriteString(`<span class="note">This session works in the project directly, so there is nothing to merge.</span>`)
+	}
+
+	if sess.Worktree {
+		disabled := ""
+		if len(files) == 0 {
+			disabled = " disabled"
+		}
+		fmt.Fprintf(&b, `<button class="merge" style="margin-left:auto" hx-post="/s/%s/merge" `+
+			`hx-target="#drawer" hx-swap="innerHTML"%s>Merge</button>`, esc(sess.ID), disabled)
+	}
+	b.WriteString(`</footer>`)
+	return b.String()
+}
+
+func scopeLabel(sess *Session) string {
+	if sess.Worktree {
+		return sess.Branch
+	}
+	return "working tree"
 }
