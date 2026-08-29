@@ -583,3 +583,37 @@ func TestSession_CloseReapsTheSubprocess(t *testing.T) {
 		t.Fatalf("transport waited %d times, want 1", f.waited)
 	}
 }
+
+func TestSession_SecondPromptWhileOneIsInFlight(t *testing.T) {
+	// given
+	// ... a session with a turn already under way
+	f := newFake()
+	sess := newTestSession(t, f, Options{})
+
+	started := make(chan struct{})
+	go func() {
+		f.awaitWrites(t, 2)
+		close(started)
+		f.push(t, successResult())
+	}()
+
+	inFlight := make(chan error, 1)
+	go func() {
+		_, err := sess.Prompt(context.Background(), "first")
+		inFlight <- err
+	}()
+	<-started
+
+	// when
+	// ... a second prompt is sent before the first has finished
+	_, err := sess.Prompt(context.Background(), "second")
+
+	// then
+	// ... it is refused rather than queued, so the caller decides what to do
+	if !errors.Is(err, ErrPromptInFlight) {
+		t.Fatalf("err = %v, want ErrPromptInFlight", err)
+	}
+	if first := <-inFlight; first != nil {
+		t.Fatalf("first prompt: %v", first)
+	}
+}

@@ -13,8 +13,15 @@ import (
 	"github.com/TheLazyLemur/pi-claude/internal/proto"
 )
 
-// ErrSessionClosed is returned once a session has been closed.
-var ErrSessionClosed = errors.New("pi: session closed")
+var (
+	// ErrSessionClosed is returned once a session has been closed.
+	ErrSessionClosed = errors.New("pi: session closed")
+
+	// ErrPromptInFlight is returned by Prompt when the session is already
+	// working on a turn. One session runs one prompt at a time; start another
+	// session if you want another turn in parallel.
+	ErrPromptInFlight = errors.New("pi: a prompt is already in flight")
+)
 
 // Session is a running conversation with the Claude Code CLI. It keeps one
 // subprocess alive across many prompts, so context and cost survive between
@@ -196,7 +203,7 @@ func (s *Session) Prompt(ctx context.Context, text string) (Turn, error) {
 	}
 	if s.pending != nil {
 		s.mu.Unlock()
-		return Turn{}, errors.New("pi: a prompt is already in flight")
+		return Turn{}, ErrPromptInFlight
 	}
 	needsInit := !s.initDone
 	s.initDone = true
