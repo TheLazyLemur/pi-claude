@@ -232,47 +232,56 @@ sess.Prompt(ctx, "Which of those is the largest?") // still has the first in con
 
 ## A harness where every tool is yours
 
-`examples/harness` is the shape most embedded agents want: no built-in tools, no
-MCP servers from the machine, and a tool surface that is entirely Go functions
-closing over state the host owns.
+`examples/harness` is a working coding agent, and the shape most embedded agents
+want: no built-in tools, no MCP servers from the machine, no shell. The tool
+surface is entirely Go functions closing over state the host owns.
 
 ```
-go run ./examples/harness                       # interactive, seeded workspace
-go run ./examples/harness "fix the bug"         # one shot
-echo "fix the bug" | go run ./examples/harness  # piped
-go run ./examples/harness -dir ./project "task"
+harness                       # interactive, in the current directory
+harness "fix the flaky test"  # one shot
+echo "..." | harness          # piped, one prompt per line
+harness -C ./other "task"     # somewhere else
 ```
 
 Five tools — `list_files`, `read_file`, `search`, `write_file`, `edit_file` —
 over a `workspace` that resolves every path and refuses anything outside itself.
 The sandbox is Go code, not a line in the prompt, so a model asking for
 `../../.ssh/id_rsa` gets an error result it can read rather than a file. The
-workspace also keeps its own audit trail, so what changed is a fact the host
-holds rather than something reconstructed from the transcript.
+workspace keeps its own audit trail, so what changed is a fact the host holds
+rather than something reconstructed from the transcript.
 
-With no task it reads prompts from stdin, one per line, on the same session —
-so the second turn still knows what the first one found.
+With no task it reads prompts from stdin on the same session, so the second turn
+still knows what the first one found.
 
 ```
-> What files are in the workspace, and what does Total do?
-· list_files
-· read_file cart.go
-Total sums item.Price and ignores Quantity...
+$ cd myproject && harness
+/Users/dan/myproject
+14 files, 5 tools, no built-ins. Ctrl-D to exit.
 
-> Now fix the bug you just described.
-· edit_file cart.go
+> Total ignores Quantity. Fix it and add a table-driven test.
+  · list_files
+  · read_file cart.go
+  · edit_file cart.go
+  · write_file cart_test.go
+
 cart.go line 14: total += item.Price -> total += item.Price * float64(item.Quantity)
 
---- 2 file changes ---
-  write  cart_test.go (+1083 bytes)
+[7 turns · $0.1287 · 12 in / 1996 out]
+
+2 files changed
   edit   cart.go (+25 bytes)
+  write  cart_test.go (+1482 bytes)
 ```
 
 Ctrl-C stops the turn in progress and returns the prompt; Ctrl-D leaves.
 
+Two behaviours you get only because the tools are yours: `edit_file` refuses an
+ambiguous match instead of guessing which occurrence you meant, and the agent
+cannot claim it ran the tests, because there is no tool that could.
+
 ## Examples
 
-- `examples/harness` — a full harness: five custom tools, no built-ins, stdin REPL
+- `examples/harness` — a working coding agent: five custom tools, no built-ins, stdin REPL
 - `examples/minimal` — one prompt, one answer
 - `examples/tools-only` — every built-in off, one custom tool, verified end to end
 - `examples/approve` — confining file reads to a directory

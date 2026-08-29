@@ -1,16 +1,13 @@
-// A typical harness: every tool the agent has is one of ours.
+// A coding agent whose entire tool surface is this program's own Go functions.
 //
-// No built-in tools, no MCP servers from this machine. The agent can list,
-// read, search, write and edit — all through Go functions closing over a
-// workspace that enforces its own sandbox and keeps its own audit trail.
+// No built-in tools, no MCP servers from the machine, no shell. Five tools over
+// the directory you are standing in, with the sandbox enforced in Go rather
+// than asked for in the prompt.
 //
-//	go run ./examples/harness                          # interactive, seeded workspace
-//	go run ./examples/harness "fix the bug"            # one shot
-//	echo "fix the bug" | go run ./examples/harness     # piped
-//	go run ./examples/harness -dir ./somewhere "task"
-//
-// With no task the session stays open and reads prompts from stdin, one per
-// line, so later turns keep everything the earlier ones learned.
+//	harness                      # interactive, in the current directory
+//	harness "fix the flaky test" # one shot
+//	echo "..." | harness         # piped, one prompt per line
+//	harness -C ./other "task"    # somewhere else
 package main
 
 import (
@@ -22,57 +19,47 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	pi "github.com/TheLazyLemur/pi-claude"
 )
 
-const systemPrompt = `You are working inside a sandboxed workspace.
+const systemPrompt = `You are a coding agent working inside a single directory.
 
 The only way to see or change anything is the tools you have been given. There
-is no shell, no network, and nothing outside the workspace is reachable: paths
-that escape it are refused, not silently redirected.
+is no shell, no network, and nothing outside the directory is reachable: paths
+that escape it are refused, not silently redirected. You cannot run tests or
+builds, so never claim you have.
 
 Read before you write. Prefer edit_file over write_file so you do not discard
 work you have not read. If a tool refuses, read the message and adjust rather
-than retrying the same call.`
+than retrying the same call. Match the conventions already in the files you
+touch. Be terse.`
 
 func main() {
-	dir := flag.String("dir", "", "workspace directory (default: a seeded scratch workspace)")
-	verbose := flag.Bool("v", false, "print every tool call")
+	dir := flag.String("C", ".", "directory to work in")
+	model := flag.String("model", "", "model to use (default: the CLI's)")
+	verbose := flag.Bool("v", false, "print full tool arguments")
 	flag.Parse()
 
-	task := strings.Join(flag.Args(), " ")
-
-	root := *dir
-	var suggestion string
-	if root == "" {
-		seeded, seededTask, err := seedWorkspace()
-		if err != nil {
-			log.Fatal(err)
-		}
-		root, suggestion = seeded, seededTask
-		fmt.Printf("workspace: %s\n", root)
-	}
-
-	w, err := newWorkspace(root)
+	w, err := newWorkspace(*dir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	sess, err := pi.New(context.Background(), pi.Options{
-		CWD: w.root,
+		CWD:   w.root,
+		Model: *model,
 
 		// The agent's whole world is the tools below.
 		NoTools:     pi.NoToolsAll,
 		CustomTools: toolsFor(w),
 
 		SystemPrompt: systemPrompt,
-		MaxTurns:     30,
+		MaxTurns:     40,
 
-		// A second line of defence. The sandbox already lives in the tools, but
+		// A second line of defence. The sandbox already lives in the tools;
 		// this makes "nothing else runs" true by construction rather than by
 		// having got the flags right.
 		PermissionMode: pi.PermissionModeDefault,
@@ -92,49 +79,48 @@ func main() {
 
 	sess.Subscribe(func(ev pi.Event) {
 		switch e := ev.(type) {
-		case pi.ReadyEvent:
-			fmt.Printf("· %d tools, model %s\n", len(e.Tools), e.Model)
 		case pi.ToolCallEvent:
 			if *verbose {
-				fmt.Printf("· %s %v\n", e.Name, e.Input)
-			} else {
-				fmt.Printf("· %s %s\n", e.Name, summarise(e.Input))
+				fmt.Printf("  · %s %v\n", e.Name, e.Input)
+				return
 			}
+			fmt.Printf("  · %s %s\n", e.Name, summarise(e.Input))
 		case pi.ToolResultEvent:
 			if e.IsError {
-				fmt.Printf("  ! %s\n", firstLine(e.Text))
+				fmt.Printf("    ! %s\n", firstLine(e.Text))
 			}
 		case pi.DeniedEvent:
-			fmt.Printf("· denied %s: %s\n", e.Name, e.Reason)
+			fmt.Printf("  · denied %s: %s\n", e.Name, e.Reason)
+		case pi.ErrorEvent:
+			fmt.Fprintln(os.Stderr, "  ! ", e.Err)
 		}
 	})
 
-	// One Ctrl-C stops the turn in progress; a second one leaves.
+	// One Ctrl-C stops the turn in progress; a second leaves.
 	ctx, stop := signalContext(sess)
 	defer stop()
 
-	if task != "" {
+	if task := strings.Join(flag.Args(), " "); task != "" {
 		ask(ctx, sess, task)
 	} else {
-		repl(ctx, sess, suggestion)
+		repl(ctx, sess, w)
 	}
 
-	changes := w.Changes()
-	fmt.Printf("\n--- %d file changes ---\n", len(changes))
-	for _, c := range changes {
-		fmt.Printf("  %-6s %s (%+d bytes)\n", c.Kind, c.Path, c.Bytes)
+	if changes := w.Changes(); len(changes) > 0 {
+		fmt.Printf("\n%d file%s changed\n", len(changes), plural(len(changes)))
+		for _, c := range changes {
+			fmt.Printf("  %-6s %s (%+d bytes)\n", c.Kind, c.Path, c.Bytes)
+		}
 	}
 }
 
 // repl reads prompts from stdin, one per line, on the same session, so each
 // turn still has every earlier turn in context.
-func repl(ctx context.Context, sess *pi.Session, suggestion string) {
+func repl(ctx context.Context, sess *pi.Session, w *workspace) {
 	interactive := isTerminal(os.Stdin)
 	if interactive {
-		fmt.Println("\nType a task, or Ctrl-D to finish.")
-		if suggestion != "" {
-			fmt.Printf("Try: %s\n", suggestion)
-		}
+		files, _ := w.walk()
+		fmt.Printf("%s\n%d files, 5 tools, no built-ins. Ctrl-D to exit.\n", w.root, len(files))
 	}
 
 	in := bufio.NewScanner(os.Stdin)
@@ -144,19 +130,16 @@ func repl(ctx context.Context, sess *pi.Session, suggestion string) {
 		if interactive {
 			fmt.Print("\n> ")
 		}
-		if !in.Scan() {
+		if !in.Scan() || ctx.Err() != nil {
 			break
 		}
 
 		task := strings.TrimSpace(in.Text())
-		if task == "" {
+		switch task {
+		case "":
 			continue
-		}
-		if task == "exit" || task == "quit" {
-			break
-		}
-		if ctx.Err() != nil {
-			break
+		case "exit", "quit":
+			return
 		}
 
 		if !interactive {
@@ -183,12 +166,12 @@ func ask(ctx context.Context, sess *pi.Session, task string) {
 	}
 
 	fmt.Printf("\n%s\n", strings.TrimSpace(turn.Text))
-	fmt.Printf("\n[%d turns, $%.4f, %d in / %d out]\n",
+	fmt.Printf("\n[%d turns · $%.4f · %d in / %d out]\n",
 		turn.Turns, turn.CostUSD, turn.Usage.InputTokens, turn.Usage.OutputTokens)
 }
 
 // signalContext cancels on the first Ctrl-C, so the current turn stops and the
-// prompt comes back. A second one is left to the runtime, which exits.
+// prompt comes back. A second is left to the runtime, which exits.
 func signalContext(sess *pi.Session) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -206,14 +189,6 @@ func signalContext(sess *pi.Session) (context.Context, func()) {
 		signal.Stop(ch)
 		cancel()
 	}
-}
-
-func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // summarise keeps the trace readable when a tool is handed a whole file.
@@ -237,43 +212,17 @@ func firstLine(s string) string {
 	return s
 }
 
-// seedWorkspace builds a small project with a deliberate bug in it, so the
-// example does something real out of the box.
-func seedWorkspace() (root, task string, err error) {
-	root, err = os.MkdirTemp("", "pi-harness-*")
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
 	if err != nil {
-		return "", "", err
+		return false
 	}
-
-	files := map[string]string{
-		"go.mod": "module cart\n\ngo 1.25\n",
-		"cart.go": `package cart
-
-// Item is a line in a shopping cart.
-type Item struct {
-	Name     string
-	Price    float64
-	Quantity int
-}
-
-// Total returns the cost of every item in the cart.
-func Total(items []Item) float64 {
-	var total float64
-	for _, item := range items {
-		total += item.Price
-	}
-	return total
-}
-`,
-		"README.md": "# cart\n\nA tiny shopping cart.\n",
-	}
-
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
-			return "", "", err
-		}
-	}
-
-	return root, "Total ignores Quantity, so a cart with 3 of an item is priced as 1. " +
-		"Find the bug, fix it, and add a table-driven test for Total in cart_test.go.", nil
+	return info.Mode()&os.ModeCharDevice != 0
 }
