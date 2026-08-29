@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ type fakeTransport struct {
 	mu     sync.Mutex
 	writes [][]byte
 	closed int
+	waited int
 
 	frames chan proto.Frame
 	wrote  chan struct{}
@@ -50,7 +52,12 @@ func (f *fakeTransport) Close() error {
 	return nil
 }
 
-func (f *fakeTransport) Wait() error { return nil }
+func (f *fakeTransport) Wait() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waited++
+	return nil
+}
 
 // push sends a frame as the CLI would.
 func (f *fakeTransport) push(t *testing.T, v any) {
@@ -517,5 +524,62 @@ func TestSession_PromptAfterCloseFails(t *testing.T) {
 	// ... it fails loudly rather than hanging
 	if err == nil {
 		t.Fatal("expected an error prompting a closed session")
+	}
+}
+
+func TestSession_CancelledPromptInterruptsTheCLI(t *testing.T) {
+	// given
+	// ... a turn in flight that the caller is about to give up on
+	f := newFake()
+	sess := newTestSession(t, f, Options{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		f.awaitWrites(t, 2) // initialize, then the prompt
+		cancel()
+	}()
+
+	// when
+	// ... the caller's context is cancelled before any result arrives
+	_, err := sess.Prompt(ctx, "long running")
+
+	// then
+	// ... an interrupt is sent, so the CLI stops rather than billing on alone
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	f.awaitWrites(t, 1)
+	var interrupted bool
+	for _, m := range f.sent(t) {
+		if m["type"] != "control_request" {
+			continue
+		}
+		if m["request"].(map[string]any)["subtype"] == "interrupt" {
+			interrupted = true
+		}
+	}
+	if !interrupted {
+		t.Fatal("no interrupt was sent for the abandoned turn")
+	}
+}
+
+func TestSession_CloseReapsTheSubprocess(t *testing.T) {
+	// given
+	// ... an open session
+	f := newFake()
+	sess := newSession(context.Background(), f, Options{})
+
+	// when
+	// ... it is closed
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// then
+	// ... the process was waited on, so it does not linger as a zombie
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.waited != 1 {
+		t.Fatalf("transport waited %d times, want 1", f.waited)
 	}
 }

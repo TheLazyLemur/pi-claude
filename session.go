@@ -229,6 +229,9 @@ func (s *Session) Prompt(ctx context.Context, text string) (Turn, error) {
 		return turn, nil
 	case <-ctx.Done():
 		s.clearPending()
+		// The CLI does not know the caller gave up, and would keep working the
+		// turn, and billing for it, until it finished.
+		s.Interrupt()
 		return Turn{}, ctx.Err()
 	case <-s.ctx.Done():
 		s.clearPending()
@@ -368,7 +371,16 @@ func (s *Session) Close() error {
 	s.mu.Unlock()
 
 	s.cancel()
-	return s.transport.Close()
+	if err := s.transport.Close(); err != nil {
+		return err
+	}
+
+	// Reap the subprocess. Killing it without waiting leaves a zombie for the
+	// life of the parent, which matters as soon as sessions are short-lived and
+	// numerous. The exit status is expected to be a signal, so it is not an
+	// error worth reporting.
+	s.transport.Wait()
+	return nil
 }
 
 // Wait blocks until the subprocess exits.

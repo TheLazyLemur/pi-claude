@@ -1,17 +1,17 @@
 # pi-claude
 
 Drive the Claude Code CLI from Go. One subprocess per session, a typed API, and
-your own Go functions as tools — no MCP server, no port, no JSON-RPC in your code.
+your own Go functions as tools. No MCP server, no port, no JSON-RPC in your code.
 
-The API shape is borrowed from the [pi agent harness](https://pi.dev): one options
-struct, one factory, declarative tools, and a `Subscribe` that returns its own
-unsubscribe.
+The API shape is borrowed from the [pi agent harness](https://pi.dev): one
+options struct, one factory, tools you declare instead of wire up, and a
+`Subscribe` that hands back its own unsubscribe.
 
 ```bash
 go get github.com/TheLazyLemur/pi-claude
 ```
 
-Requires the `claude` CLI on `PATH`.
+You need the `claude` CLI on `PATH`.
 
 ## Quick start
 
@@ -27,8 +27,8 @@ fmt.Printf("%d tokens in, %d out, $%.4f\n",
 
 ## Your own tools
 
-Parameters are a Go struct. The JSON Schema is derived from it, so you declare
-the shape once:
+Parameters are a Go struct. The schema comes from the struct, so you write the
+shape once:
 
 ```go
 type fillParams struct {
@@ -44,28 +44,28 @@ fill := pi.DefineTool("submit_fill", "Submit the code that replaces the region",
 sess, err := pi.New(ctx, pi.Options{CustomTools: []pi.Tool{fill}})
 ```
 
-`desc` becomes the field description the model reads. Fields are required unless
-they are pointers or carry `omitempty`. `json:"-"` is skipped. Use `pi.NoParams`
-for a tool that takes no arguments.
+`desc` is what the model reads. A field is required unless it is a pointer or
+has `omitempty`. `json:"-"` is skipped. For a tool that takes nothing, use
+`pi.NoParams`.
 
-There is no MCP server here. The tool is registered over the control protocol at
-handshake time, and the CLI calls back down the same pipe.
+No MCP server runs anywhere. The tool is registered during the handshake and the
+CLI calls back down the same pipe.
 
-## Locking the tool surface down
+## Turning tools off
 
-This matters more than it looks. A developer machine commonly has a lot of MCP
-tools configured globally — on the machine this was built on, a default session
-offered **134 tools**: 30 built-ins plus 104 from Gmail, Calendar, Drive, M365
-and others. If you are embedding an agent in your own product, that is the blast
-radius you inherit.
+Worth more attention than it usually gets. Your laptop probably has more tools
+wired into Claude Code than you remember. On the machine this was built on, a
+default session offered 134: thirty built-ins, and another hundred and four from
+Gmail, Calendar, Drive and friends. Embed an agent in your product and that is
+what it can reach.
 
 ```go
-pi.Options{NoTools: pi.NoToolsAll}     // built-ins AND machine MCP servers gone
-pi.Options{NoTools: pi.NoToolsBuiltin} // built-ins gone, machine MCP servers kept
-pi.Options{Tools: []string{"Read", "Grep"}} // just these built-ins
+pi.Options{NoTools: pi.NoToolsAll}          // built-ins and machine MCP servers, both gone
+pi.Options{NoTools: pi.NoToolsBuiltin}      // built-ins gone, machine MCP servers kept
+pi.Options{Tools: []string{"Read", "Grep"}} // only these built-ins
 ```
 
-Assert on it rather than trusting it:
+Then check it, rather than hoping:
 
 ```go
 sess.Subscribe(func(ev pi.Event) {
@@ -77,7 +77,7 @@ sess.Subscribe(func(ev pi.Event) {
 
 ## Permissions
 
-`ApproveTool` is consulted before each tool call. Nil allows everything.
+`ApproveTool` runs before each tool call. Leave it nil and everything is allowed.
 
 ```go
 sess, _ := pi.New(ctx, pi.Options{
@@ -93,20 +93,21 @@ sess, _ := pi.New(ctx, pi.Options{
 })
 ```
 
-**The gotcha:** if the machine's own Claude Code config sets an auto-approving
-permission mode, the CLI never asks and your callback never runs. Passing
-`PermissionMode: pi.PermissionModeDefault` explicitly overrides that. The zero
-value deliberately passes no flag, leaving the machine's configuration in charge —
-so set it explicitly whenever the approval callback is load-bearing.
+Watch out for this one. If the machine's Claude Code config auto-approves, the
+CLI never asks, and your callback never runs. It fails open and says nothing.
+Set `PermissionMode: pi.PermissionModeDefault` explicitly to take it back. The
+zero value passes no flag on purpose and lets the machine config win, so set it
+whenever the callback actually matters.
 
-Your tools are reported by the bare name you registered (`greet`, not
-`mcp__pi__greet`); `req.Mine` distinguishes them from built-ins, and
-`req.Qualified` has the wire name if you need it.
+Your tools arrive under the name you registered, `greet` rather than
+`mcp__pi__greet`. `req.Mine` tells you it is yours. `req.Qualified` has the wire
+name if you want it. `req.BlockedPath` and `req.DecisionReason` tell you why the
+CLI is asking.
 
 ## Hooks
 
-Hooks run at points in the CLI's own lifecycle, and can rewrite a tool's
-arguments, inject context, or block the call outright.
+Hooks fire at points in the CLI's own lifecycle. They can rewrite a tool's
+arguments, add context, or stop the call.
 
 ```go
 sess, _ := pi.New(ctx, pi.Options{
@@ -126,8 +127,9 @@ sess, _ := pi.New(ctx, pi.Options{
 })
 ```
 
-The deny reason reaches the model as the tool result, so write it as an
-instruction — "use the existing helper instead" teaches it more than "denied".
+The deny reason lands on the model as the tool result. Write it as an
+instruction. "Use the existing helper instead" teaches it something. "Denied"
+teaches it nothing.
 
 Events: `HookPreToolUse`, `HookPostToolUse`, `HookPostToolUseFailure`,
 `HookPermissionRequest`, `HookUserPromptSubmit`, `HookSessionStart`,
@@ -136,7 +138,7 @@ Events: `HookPreToolUse`, `HookPostToolUse`, `HookPostToolUseFailure`,
 
 ## Structured output
 
-Constrain the final answer to a shape, and get it back typed:
+Pin the answer to a shape and get it back typed:
 
 ```go
 type verdict struct {
@@ -152,7 +154,7 @@ var got verdict
 json.Unmarshal(turn.StructuredOutput, &got) // {Paris 100}
 ```
 
-A turn that fails validation comes back with `Subtype ==
+If it cannot produce the shape, the turn comes back with `Subtype ==
 "error_max_structured_output_retries"`.
 
 ## Streaming
@@ -161,8 +163,8 @@ A turn that fails validation comes back with `Subtype ==
 pi.Options{IncludePartialMessages: true}
 ```
 
-turns on `DeltaEvent`, which carries tokens as they arrive; `Thinking`
-distinguishes reasoning from answer text.
+turns on `DeltaEvent`, one per token as it arrives. `Thinking` tells you whether
+it is reasoning or answer.
 
 ## Subagents
 
@@ -186,7 +188,7 @@ stop := sess.Subscribe(func(ev pi.Event) {
     case pi.DeltaEvent:      // streamed token (IncludePartialMessages)
     case pi.StatusEvent:     // e.g. "compacting"
     case pi.CompactEvent:    // conversation was compacted
-    case pi.RateLimitEvent:  // window utilisation and reset time
+    case pi.RateLimitEvent:  // window usage and reset time
     case pi.AuthEvent:       // authentication progress
     case pi.TurnEvent:       // turn finished, with accounting
     case pi.ErrorEvent:      // protocol or transport failure
@@ -197,7 +199,7 @@ defer stop()
 
 ## Multi-turn
 
-The subprocess stays alive, so context and cost carry across prompts.
+The subprocess stays up, so context and cost carry across prompts.
 
 ```go
 sess, _ := pi.New(ctx, pi.Options{Tools: []string{"Read", "Grep"}})
@@ -208,7 +210,8 @@ sess.Prompt(ctx, "Which of those is the largest?") // still has the first in con
 ```
 
 `Resume` and `Continue` pick up an earlier session. `Interrupt`, `SetModel` and
-`SetPermissionMode` work mid-session.
+`SetPermissionMode` work mid-session. Cancel the context you passed to `Prompt`
+and the CLI is interrupted too, so an abandoned turn stops costing you money.
 
 ## API
 
@@ -223,18 +226,18 @@ sess.Prompt(ctx, "Which of those is the largest?") // still has the first in con
 | `sess.Interrupt() / SetModel() / SetPermissionMode() / SetMaxThinkingTokens()` | mid-session control |
 | `sess.MCPStatus(ctx)` | external MCP server state |
 | `sess.SetMCPServers(ctx, servers)` | replace external MCP servers |
-| `sess.RewindFiles(ctx, id, dryRun)` | undo file edits (see caveat) |
-| `pi.SchemaFor[T]()` | JSON Schema from a Go type |
-| `sess.Close() error` | stop the subprocess; safe to call twice |
+| `sess.RewindFiles(ctx, id, dryRun)` | undo file edits, but read the caveat |
+| `sess.Close() error` | stop and reap the subprocess; safe to call twice |
 | `pi.DefineTool(name, desc, fn) Tool` | tool from a typed param struct |
+| `pi.SchemaFor[T]()` | JSON Schema from a Go type |
 | `pi.Text(...) / pi.Errorf(...)` | tool results |
 | `pi.Allow() / pi.Deny(reason)` | permission decisions |
 
 ## A harness where every tool is yours
 
-`examples/harness` is a working coding agent, and the shape most embedded agents
-want: no built-in tools, no MCP servers from the machine, no shell. The tool
-surface is entirely Go functions closing over state the host owns.
+`examples/harness` is a working coding agent. No built-in tools, no MCP servers
+from the machine, no shell. Every tool is a Go function closing over state you
+own.
 
 ```
 harness                       # interactive, in the current directory
@@ -243,15 +246,16 @@ echo "..." | harness          # piped, one prompt per line
 harness -C ./other "task"     # somewhere else
 ```
 
-Five tools — `list_files`, `read_file`, `search`, `write_file`, `edit_file` —
-over a `workspace` that resolves every path and refuses anything outside itself.
-The sandbox is Go code, not a line in the prompt, so a model asking for
-`../../.ssh/id_rsa` gets an error result it can read rather than a file. The
-workspace keeps its own audit trail, so what changed is a fact the host holds
-rather than something reconstructed from the transcript.
+Five tools: `list_files`, `read_file`, `search`, `write_file`, `edit_file`. They
+all go through a `workspace` that resolves paths and refuses anything outside
+itself. The sandbox is Go code, not a line in a prompt. Ask it for
+`../../.ssh/id_rsa` and you get an error the model can read, not a file.
 
-With no task it reads prompts from stdin on the same session, so the second turn
-still knows what the first one found.
+The workspace keeps its own record of what changed. That way what happened is
+something you know, not something you reconstruct from a transcript.
+
+Give it no task and it reads prompts from stdin on one session, so the second
+turn still knows what the first one found.
 
 ```
 $ cd myproject && harness
@@ -273,23 +277,23 @@ cart.go line 14: total += item.Price -> total += item.Price * float64(item.Quant
   write  cart_test.go (+1482 bytes)
 ```
 
-Ctrl-C stops the turn in progress and returns the prompt; Ctrl-D leaves.
+Ctrl-C stops the turn and gives you the prompt back. Ctrl-D leaves.
 
-Two behaviours you get only because the tools are yours: `edit_file` refuses an
-ambiguous match instead of guessing which occurrence you meant, and the agent
-cannot claim it ran the tests, because there is no tool that could.
+Two things fall out of owning the tools. `edit_file` refuses an ambiguous match
+instead of picking an occurrence and hoping. And the agent cannot claim it ran
+your tests, because nothing it has could run them.
 
 ## Examples
 
-- `examples/harness` — a working coding agent: five custom tools, no built-ins, stdin REPL
-- `examples/minimal` — one prompt, one answer
-- `examples/tools-only` — every built-in off, one custom tool, verified end to end
-- `examples/approve` — confining file reads to a directory
-- `examples/streaming` — events across several turns
-- `examples/verify` — hooks, streaming, structured output and subagents, checked live
+- `examples/harness`: a working coding agent: five custom tools, no built-ins, stdin REPL
+- `examples/minimal`: one prompt, one answer
+- `examples/tools-only`: every built-in off, one custom tool, checked end to end
+- `examples/approve`: keeping file reads inside a directory
+- `examples/streaming`: events across several turns
+- `examples/verify`: hooks, streaming, structured output and subagents, run live
 
 `examples/tools-only` is the same demo written by hand against the raw protocol
-in **332 lines**. Here it is **85**, and 40 of those print the verdict.
+in 332 lines. Here it is 85, and 40 of those just print the verdict.
 
 ## Debugging
 
@@ -297,22 +301,23 @@ in **332 lines**. Here it is **85**, and 40 of those print the verdict.
 
 ## Status
 
-Tested against Claude Code 2.1.251. The protocol is not versioned or officially
-published, so treat CLI upgrades as potentially breaking.
+Tested against Claude Code 2.1.251. The protocol is not versioned and not
+officially published, so assume a CLI upgrade can break it.
 
-Verified against the live CLI: custom tools, tool-surface control, permissions,
-hooks (including deny reasons reaching the model), streaming deltas, structured
-output, subagents, and MCP status. Run `go run ./examples/verify` to re-check
-after a CLI upgrade — it exits non-zero on regression.
+Run against the live CLI, not just unit tests: custom tools, turning tools off,
+permissions, hooks including deny reasons reaching the model, streaming deltas,
+structured output, subagents, MCP status. `go run ./examples/verify` re-checks
+all of that and exits non-zero if something regressed. Run it after a CLI
+upgrade.
 
-One known limitation: `RewindFiles` plumbs through correctly but Claude Code
-2.1.251 answers `{"canRewind": false, "error": "File rewinding is not
-enabled."}` even with `EnableFileCheckpointing` set. The CLI exposes no flag for
-it, so check `canRewind` in the reply rather than assuming.
+One thing does not work. `RewindFiles` sends and receives correctly, but Claude
+Code 2.1.251 replies `{"canRewind": false, "error": "File rewinding is not
+enabled."}` even with `EnableFileCheckpointing` set, and there is no flag to turn
+it on. Read `canRewind` in the reply rather than assuming.
 
 Built on protocol notes from
 [claude-code-stdio-protocol](https://github.com/TheLazyLemur/claude-agent-sdk-go),
-which documents the wire format in full.
+which writes up the wire format in full.
 
 ## Licence
 
