@@ -408,12 +408,48 @@ No retries. `RateLimitEvent` tells you where you stand, but nothing acts on it.
 No transcript store. `Resume` takes a session id, and remembering which id goes
 with which piece of work is your job.
 
+## A local model instead of the CLI
+
+`external/anthropic` speaks the Anthropic Messages API over HTTP and runs the
+agent loop itself. There is no `claude` process, no MCP server, and no API key:
+it is pointed at Ollama's Anthropic-compatible endpoint on this machine.
+
+```go
+sess, err := pi.Open(ctx, anthropic.New(), pi.Options{
+    CustomTools: []pi.Tool{getTime},
+    MaxTurns:    5,
+    ApproveTool: onlyMine,
+})
+```
+
+Your tools, your approver and your event subscribers are unchanged. The model
+asks for a tool, the host runs it, the result goes back, and the loop turns
+until the model stops asking.
+
+The deployment is hardcoded in `anthropic.Defaults()`, which is the one place
+those values live:
+
+```go
+BaseURL   http://localhost:11434   // ANTHROPIC_BASE_URL
+AuthToken ollama                   // ANTHROPIC_AUTH_TOKEN
+APIKey    (empty)                  // ANTHROPIC_API_KEY
+Models    deepseek-v4-flash:cloud  // opus, sonnet, haiku and subagent alike
+```
+
+Nothing reads the environment. When configuration arrives it fills the same
+`anthropic.Config` and reaches the backend through `anthropic.NewWith`.
+
+Streaming, hooks, subagents, structured output and resuming are not implemented
+yet. Options asking for them are refused by `Open` rather than quietly dropped,
+so a session never runs with less policy than you asked for.
+
 ## Layout
 
 ```
 pi.go                    the front door: one import, the whole API
 core/                    the domain, and the port a backend plugs into
 external/claudecode/     the Claude Code CLI: flags, control protocol, MCP shape
+external/anthropic/      the Anthropic Messages API over HTTP, pointed at Ollama
 external/scripted/       a backend with no process, for tests and proof
 internal/proto/          JSON over stdio, reusable by any CLI backend
 internal/jsonschema/     Go struct to JSON Schema
@@ -439,9 +475,9 @@ domain-shaped, with no JSON-RPC and no wire formats, so a second backend does
 not have to pretend to understand Claude Code's.
 
 `external/scripted` is that proof. It spawns nothing, speaks no protocol, and
-runs the host's tools and permission policy through the same interfaces. A
-backend driving a model API directly would be shaped the same way: the loop
-lives in the backend, the tools stay with the host.
+runs the host's tools and permission policy through the same interfaces.
+`external/anthropic` is the working version of the same idea: the loop lives in
+the backend, the tools stay with the host.
 
 ```go
 sess, _ := pi.Open(ctx, myBackend, pi.Options{CustomTools: tools})
@@ -449,10 +485,11 @@ sess, _ := pi.Open(ctx, myBackend, pi.Options{CustomTools: tools})
 
 `pi.New` is the same call with the Claude Code backend already chosen.
 
-## Examples## Examples
+## Examples
 
 - `examples/webharness`: browser UI over htmx and SSE, with projects, sessions, worktrees and a shell
 - `examples/harness`: a working coding agent, five custom tools, no built-ins, stdin REPL
+- `examples/ollama`: the same agent loop against a local model, no CLI involved
 - `examples/minimal`: one prompt, one answer
 - `examples/tools-only`: every built-in off, one custom tool, checked end to end
 - `examples/approve`: keeping file reads inside a directory

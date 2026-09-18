@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pi "github.com/TheLazyLemur/pi-claude"
+	"github.com/TheLazyLemur/pi-claude/external/anthropic"
 )
 
 // Session is one conversation: its own claude subprocess, its own directory,
@@ -83,14 +84,13 @@ func NewSession(id, workspaceID, root, branch string, worktree bool, hub *Hub, m
 		byCard:      map[string]*entry{},
 	}
 
-	agent, err := pi.New(context.Background(), pi.Options{
+	agent, err := pi.Open(context.Background(), anthropic.New(), pi.Options{
 		CWD:   ws.root,
 		Model: model,
 
 		// Skill is the one built-in kept: it is how Claude Code loads a
 		// project's own instructions, and reimplementing it would be silly.
 		// Everything else the agent can do is defined in this program.
-		Tools:           []string{"Skill"},
 		StrictMCPConfig: true,
 		CustomTools:     s.tools(),
 
@@ -228,6 +228,10 @@ func (s *Session) watch() {
 			s.emit("msg", renderEntry(s.note(&entry{Kind: "agent", Text: e.Text})))
 
 		case pi.ThinkingEvent:
+			// Withheld reasoning has nothing to show.
+			if e.Text == "" {
+				return
+			}
 			s.emit("msg", renderEntry(s.note(&entry{Kind: "think", Text: e.Text})))
 
 		case pi.ToolCallEvent:
