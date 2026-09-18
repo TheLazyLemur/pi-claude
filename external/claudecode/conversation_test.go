@@ -660,14 +660,18 @@ func TestSession_CloseReapsTheSubprocess(t *testing.T) {
 
 func TestSession_SecondPromptWhileOneIsInFlight(t *testing.T) {
 	// given
-	// ... a session with a turn already under way
+	// ... a session with a turn already under way, whose result is held back
+	// ... until the second prompt has been answered: sent any earlier, the
+	// ... first turn can finish first and the second prompt is not refused
 	f := newFake()
 	sess := newTestSession(t, f, core.Options{})
 
 	started := make(chan struct{})
+	release := make(chan struct{})
 	go func() {
 		f.awaitWrites(t, 2)
 		close(started)
+		<-release
 		f.push(t, successResult())
 	}()
 
@@ -681,6 +685,7 @@ func TestSession_SecondPromptWhileOneIsInFlight(t *testing.T) {
 	// when
 	// ... a second prompt is sent before the first has finished
 	_, err := sess.Prompt(context.Background(), "second")
+	close(release)
 
 	// then
 	// ... it is refused rather than queued, so the caller decides what to do
