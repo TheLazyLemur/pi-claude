@@ -62,6 +62,125 @@ func TestSession_PartialMessagesBecomeDeltas(t *testing.T) {
 	}
 }
 
+func TestSession_WithheldThinkingIsStillReported(t *testing.T) {
+	// given
+	// ... a session subscribed to streaming deltas
+	f := newFake()
+	sess := newTestSession(t, f, core.Options{IncludePartialMessages: true})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI streams thinking with its text withheld, as it does for Opus 5
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": ""},
+		}})
+		f.push(t, map[string]any{"type": "assistant", "message": map[string]any{
+			"role": "assistant", "content": []any{map[string]any{"type": "thinking", "thinking": "", "signature": "sig"}},
+		}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... both still arrive, so a subscriber can tell the model thought
+	mu.Lock()
+	defer mu.Unlock()
+	var deltas []core.DeltaEvent
+	var thoughts []core.ThinkingEvent
+	for _, ev := range *events {
+		switch e := ev.(type) {
+		case core.DeltaEvent:
+			deltas = append(deltas, e)
+		case core.ThinkingEvent:
+			thoughts = append(thoughts, e)
+		}
+	}
+	if len(deltas) != 1 || !deltas[0].Thinking || deltas[0].Text != "" {
+		t.Fatalf("deltas = %+v, want one empty thinking delta", deltas)
+	}
+	if len(thoughts) != 1 || thoughts[0].Text != "" {
+		t.Fatalf("thinking = %+v, want one block with its text withheld", thoughts)
+	}
+}
+
+func TestSession_EachModelCallReportsItsUsage(t *testing.T) {
+	// given
+	// ... a session subscribed to streaming events
+	f := newFake()
+	sess := newTestSession(t, f, core.Options{IncludePartialMessages: true})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI finishes one model call and reports its final usage
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "message_delta",
+			"usage": map[string]any{
+				"input_tokens": 10, "output_tokens": 120,
+				"cache_read_input_tokens": 3000, "cache_creation_input_tokens": 400,
+			},
+		}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... that call's usage arrives on its own, separate from the turn's total
+	mu.Lock()
+	defer mu.Unlock()
+	var calls []core.UsageEvent
+	for _, ev := range *events {
+		if u, ok := ev.(core.UsageEvent); ok {
+			calls = append(calls, u)
+		}
+	}
+	want := core.Usage{InputTokens: 10, OutputTokens: 120, CacheReadInputTokens: 3000, CacheCreationInputTokens: 400}
+	if len(calls) != 1 || calls[0].Usage != want || !calls[0].Final {
+		t.Fatalf("usage events = %+v, want one final with %+v", calls, want)
+	}
+}
+
+func TestSession_ModelCallUsageIsReportedWhenTheCallStarts(t *testing.T) {
+	// given
+	// ... a session subscribed to streaming events
+	f := newFake()
+	sess := newTestSession(t, f, core.Options{IncludePartialMessages: true})
+	events, mu := collect(sess)
+
+	// when
+	// ... the CLI starts a model call, whose input side is already known
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "message_start",
+			"message": map[string]any{"usage": map[string]any{
+				"input_tokens": 10, "output_tokens": 1,
+				"cache_read_input_tokens": 3000, "cache_creation_input_tokens": 400,
+			}},
+		}})
+		f.push(t, successResult())
+	}()
+	sess.Prompt(context.Background(), "go")
+
+	// then
+	// ... its usage arrives before any tool runs, marked as not final
+	mu.Lock()
+	defer mu.Unlock()
+	var calls []core.UsageEvent
+	for _, ev := range *events {
+		if u, ok := ev.(core.UsageEvent); ok {
+			calls = append(calls, u)
+		}
+	}
+	want := core.Usage{InputTokens: 10, OutputTokens: 1, CacheReadInputTokens: 3000, CacheCreationInputTokens: 400}
+	if len(calls) != 1 || calls[0].Usage != want || calls[0].Final {
+		t.Fatalf("usage events = %+v, want one not final with %+v", calls, want)
+	}
+}
+
 func TestSession_StatusAndCompactionEvents(t *testing.T) {
 	// given
 	// ... a subscriber watching lifecycle events

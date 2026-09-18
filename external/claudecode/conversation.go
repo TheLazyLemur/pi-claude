@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -80,7 +81,7 @@ type Conversation struct {
 }
 
 // Prompt sends a message and waits for the CLI to finish the turn.
-func (c *Conversation) Prompt(ctx context.Context, text string) (core.Turn, error) {
+func (c *Conversation) Prompt(ctx context.Context, text string, images ...core.Image) (core.Turn, error) {
 	done := make(chan core.Turn, 1)
 
 	c.mu.Lock()
@@ -106,7 +107,7 @@ func (c *Conversation) Prompt(ctx context.Context, text string) (core.Turn, erro
 
 	if err := c.write(map[string]any{
 		"type":               "user",
-		"message":            map[string]any{"role": "user", "content": text},
+		"message":            map[string]any{"role": "user", "content": promptContent(text, images)},
 		"parent_tool_use_id": nil,
 		"session_id":         c.ID(),
 	}); err != nil {
@@ -199,6 +200,27 @@ func (c *Conversation) clearPending() {
 	c.mu.Lock()
 	c.pending = nil
 	c.mu.Unlock()
+}
+
+// promptContent is the user message content: the plain text, or image blocks
+// followed by the text once anything is attached. Images go first, which is
+// the order the API recommends.
+func promptContent(text string, images []core.Image) any {
+	if len(images) == 0 {
+		return text
+	}
+	blocks := make([]map[string]any, 0, len(images)+1)
+	for _, image := range images {
+		blocks = append(blocks, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": image.MediaType,
+				"data":       base64.StdEncoding.EncodeToString(image.Data),
+			},
+		})
+	}
+	return append(blocks, map[string]any{"type": "text", "text": text})
 }
 
 func requestID() string {

@@ -63,6 +63,64 @@ func TestToolset_CallDecodesParams(t *testing.T) {
 	}
 }
 
+func shotTool(text string) core.Tool {
+	return core.DefineTool("shot", "Take a screenshot",
+		func(_ context.Context, _ core.NoParams) (core.ToolResult, error) {
+			return core.ToolResult{
+				Text:   text,
+				Images: []core.Image{{MediaType: "image/png", Data: []byte{1, 2, 3}}},
+			}, nil
+		})
+}
+
+func TestToolset_CallReturnsImagesAsMCPImageContent(t *testing.T) {
+	// given
+	// ... a tool whose result carries text and a PNG
+	ts := newToolset("pi", runtimeWith(shotTool("the screen")))
+	params := map[string]any{"name": "shot", "arguments": map[string]any{}}
+
+	// when
+	// ... the tool is called
+	result, err := ts.dispatch(context.Background(), "tools/call", params)
+
+	// then
+	// ... the text comes first, then the image as base64 MCP image content
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	content := result.(map[string]any)["content"].([]map[string]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %v, want text then image", content)
+	}
+	if content[0]["type"] != "text" || content[0]["text"] != "the screen" {
+		t.Fatalf("text block = %v", content[0])
+	}
+	if content[1]["type"] != "image" || content[1]["data"] != "AQID" || content[1]["mimeType"] != "image/png" {
+		t.Fatalf("image block = %v", content[1])
+	}
+}
+
+func TestToolset_CallWithOnlyImagesSendsNoEmptyText(t *testing.T) {
+	// given
+	// ... a tool that returns an image and no text
+	ts := newToolset("pi", runtimeWith(shotTool("")))
+	params := map[string]any{"name": "shot", "arguments": map[string]any{}}
+
+	// when
+	// ... the tool is called
+	result, err := ts.dispatch(context.Background(), "tools/call", params)
+
+	// then
+	// ... the image is the only block, because the API rejects an empty text block
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	content := result.(map[string]any)["content"].([]map[string]any)
+	if len(content) != 1 || content[0]["type"] != "image" {
+		t.Fatalf("content = %v, want the image alone", content)
+	}
+}
+
 func TestToolset_CallUnknownToolIsAnErrorResult(t *testing.T) {
 	// given
 	// ... a call naming a tool that was never registered

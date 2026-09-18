@@ -7,6 +7,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -100,9 +101,21 @@ func (ts *toolset) call(ctx context.Context, params map[string]any) map[string]a
 }
 
 func resultContent(r core.ToolResult) map[string]any {
-	out := map[string]any{
-		"content": []map[string]any{{"type": "text", "text": r.Text}},
+	// An empty text block next to an image is rejected by the API, so text is
+	// left out only when there is an image to carry the result instead.
+	content := make([]map[string]any, 0, len(r.Images)+1)
+	if r.Text != "" || len(r.Images) == 0 {
+		content = append(content, map[string]any{"type": "text", "text": r.Text})
 	}
+	for _, image := range r.Images {
+		content = append(content, map[string]any{
+			"type":     "image",
+			"data":     base64.StdEncoding.EncodeToString(image.Data),
+			"mimeType": image.MediaType,
+		})
+	}
+
+	out := map[string]any{"content": content}
 	if r.IsError {
 		out["isError"] = true
 	}

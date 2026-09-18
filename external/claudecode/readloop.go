@@ -125,9 +125,9 @@ func (c *Conversation) onAssistant(frame proto.Frame) {
 			}
 			c.rt.Emit(core.TextEvent{Text: block.Text})
 		case "thinking":
-			if block.Thinking != "" {
-				c.rt.Emit(core.ThinkingEvent{Text: block.Thinking})
-			}
+			// Reported even when the CLI withholds the text: the model still
+			// thought, and a subscriber may want to know.
+			c.rt.Emit(core.ThinkingEvent{Text: block.Thinking})
 		case "tool_use":
 			c.rt.Emit(core.ToolCallEvent{
 				ID:    block.ID,
@@ -261,9 +261,24 @@ func (c *Conversation) onStreamEvent(frame proto.Frame) {
 				Text     string `json:"text"`
 				Thinking string `json:"thinking"`
 			} `json:"delta"`
+			Usage   *core.Usage `json:"usage"`
+			Message struct {
+				Usage *core.Usage `json:"usage"`
+			} `json:"message"`
 		} `json:"event"`
 	}
 	if json.Unmarshal(frame.Raw, &msg) != nil {
+		return
+	}
+
+	// message_start opens a model call with its input counted; message_delta
+	// closes it with everything counted.
+	switch {
+	case msg.Event.Type == "message_start" && msg.Event.Message.Usage != nil:
+		c.rt.Emit(core.UsageEvent{Usage: *msg.Event.Message.Usage})
+		return
+	case msg.Event.Type == "message_delta" && msg.Event.Usage != nil:
+		c.rt.Emit(core.UsageEvent{Usage: *msg.Event.Usage, Final: true})
 		return
 	}
 
@@ -273,9 +288,7 @@ func (c *Conversation) onStreamEvent(frame proto.Frame) {
 			c.rt.Emit(core.DeltaEvent{Text: msg.Event.Delta.Text})
 		}
 	case "thinking_delta":
-		if msg.Event.Delta.Thinking != "" {
-			c.rt.Emit(core.DeltaEvent{Text: msg.Event.Delta.Thinking, Thinking: true})
-		}
+		c.rt.Emit(core.DeltaEvent{Text: msg.Event.Delta.Thinking, Thinking: true})
 	}
 }
 

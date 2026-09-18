@@ -22,6 +22,18 @@ type ToolResult struct {
 
 	// IsError tells the model the call failed, so it can try something else.
 	IsError bool
+
+	// Images are shown to the model after Text, e.g. a screenshot.
+	Images []Image
+}
+
+// Image is picture data for the model, attached to a prompt or a tool result.
+type Image struct {
+	// MediaType is the image's MIME type, e.g. "image/png".
+	MediaType string
+
+	// Data is the raw image bytes. Backends encode it for the wire.
+	Data []byte
 }
 
 // Text builds a successful tool result. The arguments are formatted as by

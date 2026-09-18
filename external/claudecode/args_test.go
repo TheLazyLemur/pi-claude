@@ -55,6 +55,23 @@ func TestBuildArgs_UnsetPermissionModeIsLeftAlone(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_EffortIsPassedThrough(t *testing.T) {
+	// given
+	// ... a session pinned to an effort level
+	opts := core.Options{Effort: "xhigh"}
+
+	// when
+	// ... the CLI args are built
+	args := buildArgs(opts)
+
+	// then
+	// ... the CLI is told the level
+	value, present := argValue(args, "--effort")
+	if !present || value != "xhigh" {
+		t.Fatalf("--effort = %q (present %v), want xhigh", value, present)
+	}
+}
+
 func TestBuildArgs_NoToolsAll(t *testing.T) {
 	// given
 	// ... a session that must offer no tools but its own

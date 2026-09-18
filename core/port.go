@@ -27,7 +27,10 @@ type Backend interface {
 type Conversation interface {
 	// Prompt runs one turn to completion. Text and Duration are filled in by
 	// the caller from the events seen, so a backend need not track them.
-	Prompt(ctx context.Context, text string) (Turn, error)
+	//
+	// A backend that cannot send images must refuse them with an error rather
+	// than drop them.
+	Prompt(ctx context.Context, text string, images ...Image) (Turn, error)
 
 	// Interrupt stops the turn in flight.
 	Interrupt() error

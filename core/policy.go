@@ -123,6 +123,10 @@ type Options struct {
 	// MaxTurns bounds the agent loop.
 	MaxTurns int
 
+	// Effort sets how hard the model works, thinking included: "low",
+	// "medium", "high", "xhigh" or "max". Empty leaves the CLI's default.
+	Effort string
+
 	// MaxBudgetUSD stops the session once it has spent this much.
 	MaxBudgetUSD float64
 

@@ -13,6 +13,7 @@ package scripted
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/TheLazyLemur/pi-claude/core"
 )
@@ -39,7 +40,12 @@ type conversation struct {
 	ready bool
 }
 
-func (c *conversation) Prompt(ctx context.Context, text string) (core.Turn, error) {
+func (c *conversation) Prompt(ctx context.Context, text string, images ...core.Image) (core.Turn, error) {
+	// A Reply only ever sees the text, so an image would be lost on the way.
+	if len(images) > 0 {
+		return core.Turn{}, errors.New("pi: scripted: a Reply cannot see images")
+	}
+
 	// The handshake waits for the first prompt, because nobody can be
 	// subscribed while Open is still running.
 	if !c.ready {

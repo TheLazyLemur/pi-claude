@@ -56,8 +56,9 @@ func Open(ctx context.Context, backend Backend, opts Options, toolServer string)
 	return s, nil
 }
 
-// Prompt sends a message and blocks until the turn completes.
-func (s *Session) Prompt(ctx context.Context, text string) (Turn, error) {
+// Prompt sends a message, with any images attached, and blocks until the turn
+// completes.
+func (s *Session) Prompt(ctx context.Context, text string, images ...Image) (Turn, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -72,7 +73,7 @@ func (s *Session) Prompt(ctx context.Context, text string) (Turn, error) {
 	s.mu.Unlock()
 
 	started := time.Now()
-	turn, err := s.conv.Prompt(ctx, text)
+	turn, err := s.conv.Prompt(ctx, text, images...)
 
 	s.mu.Lock()
 	s.inFlight = false

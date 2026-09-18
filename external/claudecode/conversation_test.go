@@ -215,6 +215,40 @@ func TestSession_PromptSendsInitializeThenUserMessage(t *testing.T) {
 	}
 }
 
+func TestSession_PromptWithImagesSendsContentBlocks(t *testing.T) {
+	// given
+	// ... a session with a fake CLI behind it, and a PNG to attach
+	f := newFake()
+	sess := newTestSession(t, f, core.Options{})
+	png := core.Image{MediaType: "image/png", Data: []byte{1, 2, 3}}
+
+	// when
+	// ... a prompt goes out with the image attached
+	go func() {
+		f.awaitWrites(t, 2)
+		f.push(t, successResult())
+	}()
+	if _, err := sess.Prompt(context.Background(), "what is this?", png); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+
+	// then
+	// ... the user message carries the image as a base64 block, then the text
+	content := f.sent(t)[1]["message"].(map[string]any)["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %v, want image then text", content)
+	}
+	image := content[0].(map[string]any)
+	source := image["source"].(map[string]any)
+	if image["type"] != "image" || source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != "AQID" {
+		t.Fatalf("image block = %v", image)
+	}
+	text := content[1].(map[string]any)
+	if text["type"] != "text" || text["text"] != "what is this?" {
+		t.Fatalf("text block = %v", text)
+	}
+}
+
 func TestSession_InitializeRegistersCustomTools(t *testing.T) {
 	// given
 	// ... a session carrying one custom tool

@@ -41,6 +41,7 @@ type (
 	Options     = core.Options
 	Tool        = core.Tool
 	ToolResult  = core.ToolResult
+	Image       = core.Image
 	ToolRequest = core.ToolRequest
 	Decision    = core.Decision
 	ApproveFunc = core.ApproveFunc
@@ -65,6 +66,7 @@ type (
 	ToolProgressEvent = core.ToolProgressEvent
 	DeniedEvent       = core.DeniedEvent
 	DeltaEvent        = core.DeltaEvent
+	UsageEvent        = core.UsageEvent
 	StatusEvent       = core.StatusEvent
 	CompactEvent      = core.CompactEvent
 	AuthEvent         = core.AuthEvent

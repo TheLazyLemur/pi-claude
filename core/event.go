@@ -31,7 +31,9 @@ type ReadyEvent struct {
 // TextEvent is assistant text.
 type TextEvent struct{ Text string }
 
-// ThinkingEvent is assistant reasoning, when the model emits it.
+// ThinkingEvent is a block of assistant reasoning. Text is empty when the
+// runtime withholds it, as Claude Code does for Opus 5 and Sonnet 5; the model
+// still thought.
 type ThinkingEvent struct{ Text string }
 
 // ToolCallEvent is the model asking to run a tool. Name is the bare name.
@@ -63,10 +65,24 @@ type DeniedEvent struct {
 }
 
 // DeltaEvent is a streamed fragment of the assistant's answer. Only emitted
-// when Options.IncludePartialMessages is set.
+// when Options.IncludePartialMessages is set. A thinking fragment's Text is
+// empty when the runtime withholds the reasoning.
 type DeltaEvent struct {
 	Text     string
 	Thinking bool
+}
+
+// UsageEvent reports the tokens of one model call. A turn with tool calls makes
+// several calls, and Turn.Usage is their sum; the last call's usage is the size
+// of the context. Only emitted when Options.IncludePartialMessages is set.
+//
+// Each call reports twice. When it starts, the input and cache counts are
+// complete but the output is not, and Final is false. When it ends, all counts
+// are complete and Final is true. A tool the call asks for can run before the
+// end is reported.
+type UsageEvent struct {
+	Usage Usage
+	Final bool
 }
 
 // StatusEvent reports a session status change, such as "compacting".
@@ -114,6 +130,7 @@ func (ToolResultEvent) isEvent()   {}
 func (ToolProgressEvent) isEvent() {}
 func (DeniedEvent) isEvent()       {}
 func (DeltaEvent) isEvent()        {}
+func (UsageEvent) isEvent()        {}
 func (StatusEvent) isEvent()       {}
 func (CompactEvent) isEvent()      {}
 func (AuthEvent) isEvent()         {}

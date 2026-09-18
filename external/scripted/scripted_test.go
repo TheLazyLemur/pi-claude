@@ -2,6 +2,7 @@ package scripted_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pi "github.com/TheLazyLemur/pi-claude"
@@ -87,5 +88,25 @@ func TestHostPolicyAppliesOnAnyBackend(t *testing.T) {
 	}
 	if len(turn.Denials) != 1 || turn.Denials[0].ToolName != "greet" {
 		t.Fatalf("denials = %+v", turn.Denials)
+	}
+}
+
+func TestPromptRefusesImages(t *testing.T) {
+	// given
+	// ... a scripted session, whose Reply only ever sees the prompt text
+	sess, err := pi.Open(context.Background(), scripted.New(scripted.Say("hi")), pi.Options{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer sess.Close()
+
+	// when
+	// ... a prompt carries an image
+	_, err = sess.Prompt(context.Background(), "what is this?", pi.Image{MediaType: "image/png", Data: []byte{1}})
+
+	// then
+	// ... it is refused rather than dropped on the way to the Reply
+	if err == nil || !strings.Contains(err.Error(), "image") {
+		t.Fatalf("err = %v, want an image refusal", err)
 	}
 }
